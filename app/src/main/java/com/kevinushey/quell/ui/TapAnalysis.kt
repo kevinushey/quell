@@ -43,6 +43,22 @@ class TapSummary(val taps: List<RingDownResult>, val sampleRate: Double) {
 object TapAnalysis {
 
     /**
+     * Analyzes the trim window [start, end] (seconds from the first sample) and
+     * reports impulse times in recording time, so they line up with the trim
+     * dialog, the waveform and the antinode location marks.
+     */
+    fun analyzeWindow(series: TimeSeries, start: Double, end: Double, threshold: Double): TapSummary {
+        val slice = series.slice(start, end)
+        val summary = analyze(slice, threshold)
+        if (slice.size == 0 || series.size == 0)
+            return summary
+        val offset = slice.time.first() - series.time.first()
+        if (offset == 0.0)
+            return summary
+        return TapSummary(summary.taps.map { it.copy(impulseTime = it.impulseTime + offset) }, summary.sampleRate)
+    }
+
+    /**
      * Resamples, picks the axis the taps excited most, then walks through the
      * recording analyzing each impulse in turn. Poor fits are kept out so a
      * fumbled tap does not drag the average.

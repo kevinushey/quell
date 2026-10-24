@@ -360,7 +360,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return null
         }
         val s = repo.series(meta.id) ?: return null
-        val summary = analyzeOrReport(meta) { TapAnalysis.analyze(s.slice(meta.trimStart, meta.effectiveTrimEnd), threshold) }
+        val summary = analyzeOrReport(meta) { TapAnalysis.analyzeWindow(s, meta.trimStart, meta.effectiveTrimEnd, threshold) }
         cacheMutex.withLock {
             tapCache.keys.removeAll { it.id == meta.id && it != key }
             failedTaps.removeAll { it.id == meta.id }

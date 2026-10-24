@@ -73,7 +73,7 @@ object LocateAnalysis {
         val best = ranked[0]
         val second = ranked[1]
         val gap = best.meanNormalized - second.meanNormalized
-        val spread = sqrt(sq(best.seAmplitudeOrZero()) + sq(second.seAmplitudeOrZero()))
+        val spread = sqrt(sq(best.seNormalizedOrZero()) + sq(second.seNormalizedOrZero()))
         val ratio = if (best.meanNormalized > 0) second.meanNormalized / best.meanNormalized else Double.NaN
         val thin = ranked.filter { it.taps < 3 }
         return buildString {
@@ -87,12 +87,12 @@ object LocateAnalysis {
             }
             if (ratio.isFinite() && ratio < 0.2)
                 append(" The weakest spots respond at under a fifth of the best: they sit near a node of this mode.")
-            if (thin.isNotEmpty() && ranked.size < count + 1)
+            if (thin.isNotEmpty())
                 append(" Fewer than three clean taps at ${thin.joinToString { it.label.lowercase(Locale.US) }}.")
         }
     }
 
-    private fun LocationStat.seAmplitudeOrZero(): Double = if (seNormalized.isFinite()) seNormalized else 0.0
+    private fun LocationStat.seNormalizedOrZero(): Double = if (seNormalized.isFinite()) seNormalized else 0.0
 
     private fun sq(v: Double) = v * v
 

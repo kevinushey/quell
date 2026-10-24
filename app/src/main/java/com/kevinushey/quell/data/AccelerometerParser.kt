@@ -254,10 +254,12 @@ object AccelerometerParser {
     }
 
     private fun detectDelimiter(header: String): Char {
-        // Whitespace only wins when no real separator is present; headers like "Time (s)" contain spaces.
-        val candidates = listOf(',', ';', '\t')
-        val best = candidates.maxByOrNull { c -> header.count { it == c } } ?: ','
-        return if (header.count { it == best } > 0) best else ' '
+        // A decimal-comma row ("0;0,5;3,4") has at least as many commas as separators, so ';' and
+        // tab win whenever they appear; whitespace only wins when no real separator is present.
+        for (c in listOf(';', '\t'))
+            if (header.count { it == c } > 0)
+                return c
+        return if (header.count { it == ',' } > 0) ',' else ' '
     }
 
     private fun splitLine(line: String, delimiter: Char): List<String> {

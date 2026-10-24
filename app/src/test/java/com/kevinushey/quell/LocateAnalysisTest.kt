@@ -64,6 +64,30 @@ class LocateAnalysisTest {
     }
 
     @Test
+    fun trimmedRecordingsKeepTapsInRecordingTime() {
+        // Taps at 3 s and 8 s; trimming the first 2 s must not move them to 1 s and 6 s.
+        val fs = 400.0
+        val n = (12.0 * fs).toInt()
+        val signal = DoubleArray(n)
+        for (tapAt in listOf(3.0, 8.0)) {
+            val start = (tapAt * fs).toInt()
+            for (i in start until minOf(n, start + (3 * fs).toInt())) {
+                val t = (i - start) / fs
+                signal[i] = (if (i < start + 3) 30.0 else 0.0) + 4.0 * exp(-0.02 * 2 * PI * 25.0 * t) * sin(2 * PI * 25.0 * t)
+            }
+        }
+        val series = com.kevinushey.quell.data.TimeSeries(DoubleArray(n) { it / fs }, signal, DoubleArray(n), DoubleArray(n))
+        val taps = com.kevinushey.quell.ui.TapAnalysis.analyzeWindow(series, 2.0, 12.0, 2.0).taps
+        assertEquals(2, taps.size)
+        assertEquals(3.0, taps[0].impulseTime, 0.05)
+        assertEquals(8.0, taps[1].impulseTime, 0.05)
+        // So a mark at 5 s splits them into two locations.
+        val s = LocateAnalysis.summarize(taps, listOf(5.0))
+        assertEquals(1, s.locations[0].taps)
+        assertEquals(1, s.locations[1].taps)
+    }
+
+    @Test
     fun ringDownReportsHowHardTheModeRang() {
         // Quiet, then a 30 m/s^2 contact spike, then a 25 Hz decay starting at 4 m/s^2.
         val fs = 400.0

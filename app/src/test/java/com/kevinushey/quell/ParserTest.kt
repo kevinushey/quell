@@ -65,6 +65,12 @@ class ParserTest {
         assertEquals(50, b.size)
         assertEquals(1.25, b.x[0], 1e-9)
         assertEquals(10.5, b.time[10], 1e-9)
+
+        // Header-less decimal-comma rows: more commas than semicolons, and still a semicolon file.
+        val bare = (0 until 50).joinToString("\n") { "${"%.4f".format(java.util.Locale.US, it * 0.0025).replace('.', ',')};0,5;3,4;-8,6" }
+        val c = AccelerometerParser.parseCsvText(bare)
+        assertEquals(50, c.size)
+        assertEquals(3.4, c.y[3], 1e-9)
     }
 
     @Test

@@ -511,6 +511,7 @@ private fun LocateResultsDialog(vm: MainViewModel, meta: DatasetMeta, threshold:
             when {
                 summary == null -> Text("Analyzing...")
                 s == null -> Text("This recording could not be analyzed. Adjust its analysis window to exclude any gap, then try again.")
+                s.ranked.isEmpty() -> Text("No clean tap above ${"%.1f".format(java.util.Locale.US, threshold)} m/s^2 was found in this recording. Lower the tap threshold in analysis options, or check that the taps rang long enough to fit.")
                 else -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(s.note, style = MaterialTheme.typography.bodySmall)
                     if (s.ranked.isNotEmpty())
