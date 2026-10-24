@@ -37,7 +37,7 @@ import com.kevinushey.quell.data.ThemeMode
 import com.kevinushey.quell.ui.MainViewModel
 
 @Composable
-fun SettingsScreen(vm: MainViewModel) {
+fun SettingsScreen(vm: MainViewModel, onOpenGuide: () -> Unit) {
     val app by vm.appSettings.collectAsStateWithLifecycle()
     val sync by vm.syncStatus.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -123,6 +123,20 @@ fun SettingsScreen(vm: MainViewModel) {
         HorizontalDivider()
         Text("Analysis", style = MaterialTheme.typography.titleMedium)
         TextButton(onClick = { vm.updateAnalysis { AnalysisSettings() } }) { Text("Reset analysis options to defaults") }
+
+        HorizontalDivider()
+        Text("Help", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "The guide walks through a session: recording or importing, reading a spectrum and its uncertainty, tap tests and the antinode search, tuning a damper with sweeps, and keeping the data.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = onOpenGuide) { Text("Open the guide") }
+            OutlinedButton(onClick = {
+                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(GUIDE_URL))) }
+            }) { Text("On GitHub") }
+        }
 
         HorizontalDivider()
         Text("About", style = MaterialTheme.typography.titleMedium)

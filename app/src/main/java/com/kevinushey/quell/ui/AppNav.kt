@@ -26,6 +26,7 @@ import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material.icons.filled.Timeline
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -64,6 +65,7 @@ import androidx.navigation.navArgument
 import com.kevinushey.quell.export.Exporter
 import com.kevinushey.quell.ui.screens.DatasetsScreen
 import com.kevinushey.quell.ui.screens.DiffScreen
+import com.kevinushey.quell.ui.screens.GuideScreen
 import com.kevinushey.quell.ui.screens.RecordScreen
 import com.kevinushey.quell.ui.screens.SettingsScreen
 import com.kevinushey.quell.ui.screens.DamperScreen
@@ -87,6 +89,7 @@ enum class Screen(val route: String, val title: String, val icon: ImageVector, v
     RECORD("record?sweep={sweep}", "Record", Icons.Default.Sensors, inBottomBar = false),
     SWEEPS("sweeps", "Sweeps", Icons.Default.Timeline, inBottomBar = false),
     SWEEP("sweep/{id}", "Sweep", Icons.Default.Timeline, inBottomBar = false),
+    GUIDE("guide", "Guide", Icons.AutoMirrored.Filled.MenuBook, inBottomBar = false, longTitle = "Using Quell"),
     SETTINGS("settings", "Settings", Icons.Default.Settings, inBottomBar = false);
 
     companion object {
@@ -216,6 +219,14 @@ fun AppNav(vm: MainViewModel, pendingImports: StateFlow<List<Uri>>, onImportsCon
                                     },
                                 )
                                 DropdownMenuItem(
+                                    text = { Text("Guide") },
+                                    leadingIcon = { Icon(Icons.AutoMirrored.Filled.MenuBook, null) },
+                                    onClick = {
+                                        menuOpen = false
+                                        navController.navigate(Screen.GUIDE.route)
+                                    },
+                                )
+                                DropdownMenuItem(
                                     text = { Text("Settings") },
                                     leadingIcon = { Icon(Icons.Default.Settings, null) },
                                     onClick = {
@@ -275,7 +286,8 @@ fun AppNav(vm: MainViewModel, pendingImports: StateFlow<List<Uri>>, onImportsCon
                         onClosed = { navController.popBackStack() },
                     )
                 }
-                composable(Screen.SETTINGS.route) { SettingsScreen(vm) }
+                composable(Screen.GUIDE.route) { GuideScreen() }
+                composable(Screen.SETTINGS.route) { SettingsScreen(vm, onOpenGuide = { navController.navigate(Screen.GUIDE.route) }) }
             }
             if (busy)
                 LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))

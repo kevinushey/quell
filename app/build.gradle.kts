@@ -45,6 +45,13 @@ android {
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }
+
+    sourceSets {
+        getByName("main") {
+            // docs/guide.md is rendered by the in-app Guide screen; bundling the file keeps one source.
+            assets.srcDirs("src/main/assets", "../docs")
+        }
+    }
 }
 
 dependencies {
