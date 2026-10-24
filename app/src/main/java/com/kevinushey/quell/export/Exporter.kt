@@ -37,8 +37,11 @@ object Exporter {
             file.bufferedWriter().use { w ->
                 w.write("# channel=${settings.channel.name} normalization=${settings.normalization.name} segment=${settings.segmentSize} window=${settings.window.name} values=$yLabel\n")
                 w.write("frequency_hz")
-                for (r in results)
-                    w.write(",\"${r.meta.name.replace("\"", "\"\"")}\"")
+                for (r in results) {
+                    // A run that could not be reference-band normalized is on a different scale; say so in its header.
+                    val label = r.meta.name + if (r.referenceBandMissing) " [reference band not covered; unnormalized]" else ""
+                    w.write(",\"${label.replace("\"", "\"\"")}\"")
+                }
                 w.write("\n")
                 val grid = results.first().normalized.freq
                 val aligned = results.map { r ->

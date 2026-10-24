@@ -37,6 +37,37 @@ class AnalysisEdgeCaseTest {
     }
 
     @Test
+    fun shortSignalWindowIsSizedToItsSamples() {
+        // 512 samples under a 1024-point segment: the taper must reach zero at the last real sample.
+        val fs = 400.0
+        val x = DoubleArray(512) { sin(2 * PI * 50.0 * it / fs) }
+        val psd = Welch.psd(x, fs, 1024)
+        val peak = psd.power.indices.maxByOrNull { psd.power[it] }!!
+        assertEquals(50.0, psd.freq[peak], 2 * psd.binWidth)
+        val far = psd.power.indices.filter { kotlin.math.abs(psd.freq[it] - 50.0) > 20 }.maxOf { psd.power[it] }
+        assertTrue("leakage too high: ${far / psd.power[peak]}", far < 1e-4 * psd.power[peak])
+    }
+
+    @Test
+    fun bandWithoutBinsIsNotCovered() {
+        val s = Spectrum(DoubleArray(129) { it * 400.0 / 256 }, DoubleArray(129) { 1.0 })
+        assertTrue(s.covers(24.0, 26.0))
+        assertTrue(!s.covers(24.1, 24.3))
+        assertTrue(!s.covers(30.0, 20.0))
+        assertTrue(s.bandRms(24.1, 24.3).isNaN())
+        assertTrue(Normalization.REFERENCE_BAND.referenceFactor(s, 24.1, 24.3).isNaN())
+    }
+
+    @Test
+    fun emptyDiffIntersectionIsUnavailable() {
+        val ref = Spectrum(DoubleArray(41) { 60.0 + it }, DoubleArray(41) { 1.0 })
+        val other = Spectrum(DoubleArray(51) { it.toDouble() }, DoubleArray(51) { 1.0 })
+        val diff = SpectrumDiff.compute(ref, other, decibelDomain = false)
+        assertEquals(0, diff.freq.size)
+        assertTrue(diff.rms.isNaN() && diff.meanAbs.isNaN())
+    }
+
+    @Test
     fun resamplerRefusesAbsurdSpans() {
         val time = DoubleArray(50) { it * 0.01 } + 1.7e9
         try {

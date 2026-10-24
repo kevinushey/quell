@@ -2,9 +2,9 @@ package com.kevinushey.quell.data
 
 import com.kevinushey.quell.dsp.Resampler
 import java.io.BufferedInputStream
-import java.io.BufferedReader
 import java.io.InputStream
 import java.io.InputStreamReader
+import java.io.Reader
 import java.util.zip.ZipInputStream
 
 /**
@@ -53,13 +53,12 @@ object AccelerometerParser {
                         // phyphox experiments can export several tables; prefer the one that looks
                         // like raw samples. Score from the header alone and stream the rows, so a
                         // large table never has to exist in memory as text.
-                        val reader = BufferedReader(InputStreamReader(zip, Charsets.UTF_8), 1 shl 16)
-                        reader.mark(1 shl 16)
-                        val header = reader.readLine() ?: ""
-                        reader.reset()
+                        val lines = LineReader(InputStreamReader(zip, Charsets.UTF_8))
+                        val header = lines.readLine() ?: ""
+                        lines.pushBack(header)
                         val score = csvScore(name, header)
                         if (score > seriesScore) {
-                            runCatching { parseCsvReader(reader) }
+                            runCatching { parseCsvLines(lines) }
                                 .onFailure { lastError = it.message }
                                 .getOrNull()?.let {
                                     series = it
@@ -82,8 +81,7 @@ object AccelerometerParser {
         )
     }
 
-    fun parseCsv(input: InputStream): ParsedRun =
-        ParsedRun(parseCsvReader(BufferedReader(InputStreamReader(input, Charsets.UTF_8), 1 shl 16)))
+    fun parseCsv(input: InputStream): ParsedRun = ParsedRun(parseCsvLines(LineReader(InputStreamReader(input, Charsets.UTF_8))))
 
     private fun csvScore(name: String, headerLine: String): Int {
         var score = 0
@@ -97,10 +95,10 @@ object AccelerometerParser {
         return score
     }
 
-    fun parseCsvText(text: String): TimeSeries = parseCsvReader(BufferedReader(text.reader()))
+    fun parseCsvText(text: String): TimeSeries = parseCsvLines(LineReader(text.reader()))
 
     /** Rows are consumed as they are read; nothing beyond the sample arrays is held. */
-    fun parseCsvReader(reader: BufferedReader): TimeSeries {
+    fun parseCsvLines(reader: LineReader): TimeSeries {
         var headerLine: String? = null
         // Skip blank lines and comments ahead of the header.
         while (true) {
@@ -293,9 +291,73 @@ object AccelerometerParser {
             ?.get(3)
     }
 
-    /** Only metadata tables are read whole; sample tables stream through [parseCsvReader]. */
+    /** Only metadata tables are read whole; sample tables stream through [parseCsvLines]. */
     private const val MAX_META_CHARS = 1 shl 20
     private val MAX_ROWS = Resampler.MAX_SAMPLES.toInt()
+
+    /** Longest line a real CSV export could plausibly contain. */
+    const val MAX_LINE_CHARS = 1 shl 16
+
+    /**
+     * Line reader with a hard cap on line length, so one pathological line
+     * cannot exhaust the heap the way BufferedReader.readLine would.
+     */
+    class LineReader(private val reader: Reader, private val maxChars: Int = MAX_LINE_CHARS) {
+        private val buf = CharArray(1 shl 16)
+        private var pos = 0
+        private var len = 0
+        private var eof = false
+        private var pushedBack: String? = null
+        private val sb = StringBuilder()
+
+        /** Hands a line back so the next [readLine] returns it again (used to peek at the header). */
+        fun pushBack(line: String) {
+            pushedBack = line
+        }
+
+        fun readLine(): String? {
+            pushedBack?.let {
+                pushedBack = null
+                return it
+            }
+            sb.setLength(0)
+            var consumed = false
+            while (true) {
+                if (pos >= len) {
+                    if (eof)
+                        break
+                    val n = reader.read(buf)
+                    if (n < 0) {
+                        eof = true
+                        break
+                    }
+                    pos = 0
+                    len = n
+                    if (n == 0)
+                        continue
+                }
+                var i = pos
+                while (i < len && buf[i] != '\n')
+                    i++
+                if (sb.length + (i - pos) > maxChars)
+                    throw ImportException("A line exceeds $maxChars characters; this does not look like a CSV export")
+                sb.appendRange(buf, pos, i)
+                consumed = true
+                if (i < len) {
+                    pos = i + 1
+                    return finishLine()
+                }
+                pos = len
+            }
+            return if (consumed) finishLine() else null
+        }
+
+        private fun finishLine(): String {
+            if (sb.isNotEmpty() && sb[sb.length - 1] == '\r')
+                sb.setLength(sb.length - 1)
+            return sb.toString()
+        }
+    }
 
     private fun readAll(stream: InputStream): String {
         // Do not close: for zip entries the caller owns the stream.

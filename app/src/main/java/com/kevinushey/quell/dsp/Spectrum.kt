@@ -45,8 +45,9 @@ class Spectrum(val freq: DoubleArray, val power: DoubleArray, val segments: Int 
 
     fun supports(f: Double): Boolean = size > 0 && f >= freq[0] && f <= freq[size - 1]
 
-    /** True when the whole band [lo, hi] lies inside this spectrum's frequency range. */
-    fun covers(lo: Double, hi: Double): Boolean = size > 0 && lo >= freq[0] - binWidth / 2 && hi <= freq[size - 1] + binWidth / 2
+    /** True when [lo, hi] is a proper band inside this spectrum's range that contains at least one bin. */
+    fun covers(lo: Double, hi: Double): Boolean =
+        size > 0 && lo < hi && lo >= freq[0] - binWidth / 2 && hi <= freq[size - 1] + binWidth / 2 && freq.any { it in lo..hi }
 
     fun restrictTo(minFreq: Double, maxFreq: Double): Spectrum {
         val idx = freq.indices.filter { freq[it] in minFreq..maxFreq }

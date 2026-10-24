@@ -25,7 +25,7 @@ enum class Normalization(val label: String, val description: String) {
         if (!full.covers(lo, hi))
             return Double.NaN
         val mean = full.meanPower(lo, hi)
-        return if (mean.isNaN() || mean <= 0) 1.0 else 1.0 / mean
+        return if (mean.isNaN() || mean <= 0) Double.NaN else 1.0 / mean
     }
 
     /** Applies the normalization to the (already frequency-restricted) spectrum. */

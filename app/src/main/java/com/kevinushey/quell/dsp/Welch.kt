@@ -80,12 +80,14 @@ object Welch {
         val step = (n * (1.0 - overlap)).toInt().coerceAtLeast(1)
 
         // A short recording gets one segment: its real samples are detrended and
-        // windowed first, then zero padded, so the gravity offset does not become a step.
+        // windowed with a window of their own length, then zero padded, so neither
+        // the gravity offset nor a truncated taper becomes a step.
         val count = minOf(signal.size, n)
+        val wUsed = if (count < n) window.coefficients(count) else w
         val segments = if (signal.size < n) 1 else (signal.size - n) / step + 1
         var windowPower = 0.0
         for (i in 0 until count)
-            windowPower += w[i] * w[i]
+            windowPower += wUsed[i] * wUsed[i]
 
         val re = DoubleArray(n)
         val im = DoubleArray(n)
@@ -98,7 +100,7 @@ object Welch {
                 mean /= count
             }
             for (i in 0 until n) {
-                re[i] = if (i < count) (signal[start + i] - mean) * w[i] else 0.0
+                re[i] = if (i < count) (signal[start + i] - mean) * wUsed[i] else 0.0
                 im[i] = 0.0
             }
 

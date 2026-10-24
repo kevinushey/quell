@@ -71,6 +71,30 @@ class ParserTest {
     }
 
     @Test
+    fun lineReaderBoundsLineLengthAndHandlesCrlf() {
+        val lines = AccelerometerParser.LineReader("a,b\r\n1,2\n\n3,4".reader())
+        assertEquals("a,b", lines.readLine())
+        assertEquals("1,2", lines.readLine())
+        assertEquals("", lines.readLine())
+        assertEquals("3,4", lines.readLine())
+        assertEquals(null, lines.readLine())
+
+        val peek = AccelerometerParser.LineReader("h\nrow".reader())
+        val first = peek.readLine()!!
+        peek.pushBack(first)
+        assertEquals("h", peek.readLine())
+        assertEquals("row", peek.readLine())
+
+        val huge = AccelerometerParser.LineReader("x".repeat(200_000).reader(), maxChars = 1000)
+        try {
+            huge.readLine()
+            fail("expected ImportException")
+        } catch (e: ImportException) {
+            // expected
+        }
+    }
+
+    @Test
     fun rejectsInconsistentTimestamps() {
         val rows = (0 until 50).map { "${it * 0.01},1,2,3" } + "1700000000.0,1,2,3"
         try {

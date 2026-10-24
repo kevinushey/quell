@@ -8,6 +8,7 @@ import android.hardware.SensorManager
 import android.os.Build
 import com.kevinushey.quell.data.ParsedRun
 import com.kevinushey.quell.data.TimeSeries
+import com.kevinushey.quell.dsp.Resampler
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.text.SimpleDateFormat
@@ -22,6 +23,8 @@ data class RecorderStatus(
     val latest: FloatArray = FloatArray(3),
     val sensorName: String? = null,
     val sensorAvailable: Boolean = true,
+    /** The capture hit [Recorder.MAX_SAMPLES] and was stopped automatically; it is still waiting to be saved. */
+    val limitReached: Boolean = false,
 )
 
 /** Captures the device's own accelerometer at its fastest rate into memory. */
@@ -84,6 +87,12 @@ class Recorder(context: Context) : SensorEventListener {
     }
 
     override fun onSensorChanged(event: SensorEvent) {
+        if (count >= MAX_SAMPLES) {
+            // Beyond this the analysis would refuse the run anyway; keep what we have.
+            manager.unregisterListener(this)
+            _status.value = _status.value.copy(recording = false, limitReached = true, sampleCount = count)
+            return
+        }
         if (startNanos == 0L)
             startNanos = event.timestamp
         if (count == times.size) {
@@ -110,6 +119,11 @@ class Recorder(context: Context) : SensorEventListener {
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+
+    companion object {
+        /** Same bound the parser and resampler enforce, so a saved recording is always analyzable untrimmed. */
+        val MAX_SAMPLES = Resampler.MAX_SAMPLES.toInt()
+    }
 
     /** Everything captured so far. */
     fun snapshot(): TimeSeries? {

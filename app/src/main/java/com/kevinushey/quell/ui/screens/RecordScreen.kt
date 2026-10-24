@@ -124,6 +124,14 @@ fun RecordScreen(vm: MainViewModel, onDone: () -> Unit) {
         onDispose { activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
     }
 
+    // The recorder stops itself at the analysis sample limit; offer to save what it kept.
+    LaunchedEffect(status.limitReached) {
+        if (status.limitReached && pending == null) {
+            vm.message("Recording stopped at the ${formatCount(Recorder.MAX_SAMPLES)} sample limit")
+            pending = recorder.stop()?.copy(kind = kind)
+        }
+    }
+
     LaunchedEffect(status.recording, tapMode) {
         liveSpectrum = null
         liveTaps = null

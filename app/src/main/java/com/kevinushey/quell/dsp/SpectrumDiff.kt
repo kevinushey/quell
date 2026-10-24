@@ -45,8 +45,9 @@ object SpectrumDiff {
         }
 
         val delta = DoubleArray(n) { b[it] - a[it] }
-        val meanAbs = if (n > 0) delta.sumOf { abs(it) } / n else 0.0
-        val rms = if (n > 0) sqrt(delta.sumOf { it * it } / n) else 0.0
+        // No shared coverage means no measurement, not agreement.
+        val meanAbs = if (n > 0) delta.sumOf { abs(it) } / n else Double.NaN
+        val rms = if (n > 0) sqrt(delta.sumOf { it * it } / n) else Double.NaN
 
         val absDelta = DoubleArray(n) { abs(delta[it]) }
         val top = Peaks.find(grid, absDelta, topCount, minSeparationBins)

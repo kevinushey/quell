@@ -85,7 +85,13 @@ class DatasetRepository(private val context: Context) {
         val series = parsed.series
         val id = UUID.randomUUID().toString()
         val file = File(dir, "$id.bin")
-        writeSeries(file, series)
+        try {
+            writeSeries(file, series)
+        } catch (e: Exception) {
+            // A partial file would only eat the space a retry needs.
+            file.delete()
+            throw e
+        }
 
         mutex.withLock {
             loadLocked()
@@ -118,15 +124,20 @@ class DatasetRepository(private val context: Context) {
         }
     }
 
+    /** Reads under the mutex so a concurrent delete() cannot remove the file mid-read. */
     suspend fun series(id: String): TimeSeries? = withContext(Dispatchers.IO) {
-        mutex.withLock { cache[id] }?.let { return@withContext it }
-
-        val file = File(dir, "$id.bin")
-        if (!file.exists())
-            return@withContext null
-        val series = readSeries(file)
-
-        mutex.withLock { cache.getOrPut(id) { series } }
+        mutex.withLock {
+            cache[id]?.let { return@withLock it }
+            val file = File(dir, "$id.bin")
+            if (!file.exists())
+                return@withLock null
+            try {
+                readSeries(file).also { cache[id] = it }
+            } catch (e: Exception) {
+                _problems.tryEmit("Could not read the samples of a dataset: ${e.message ?: e.javaClass.simpleName}")
+                null
+            }
+        }
     }
 
     /** Applies `transform` to the latest metadata under the lock, so queued edits compose instead of clobbering. */

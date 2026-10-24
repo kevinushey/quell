@@ -156,6 +156,14 @@ private fun ComparisonCard(c: Comparison, referenceName: String, unit: String) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
             Text(c.other.meta.name, style = MaterialTheme.typography.titleSmall, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (c.diff.freq.isEmpty()) {
+                Text(
+                    "No frequency range shared with $referenceName in the displayed band.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                return@Column
+            }
             Text(
                 "vs $referenceName  |  RMS %.1f %s  |  mean |d| %.1f %s  |  r = %.2f".format(Locale.US, c.diff.rms, unit, c.diff.meanAbs, unit, c.diff.correlation),
                 style = MaterialTheme.typography.bodySmall,
