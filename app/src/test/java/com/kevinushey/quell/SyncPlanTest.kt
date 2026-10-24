@@ -18,29 +18,14 @@ class SyncPlanTest {
         remote: Map<String, RemoteFile>,
         state: SyncState = SyncState(),
         indexIds: List<String> = emptyList(),
+        deleted: Set<String> = emptySet(),
         indexHash: String = "i1",
         sweepsHash: String = "s1",
         csv: Boolean = false,
         localSizes: Map<String, Long> = emptyMap(),
         indexSize: Long = 100,
         sweepsSize: Long = 10,
-        degraded: Boolean = false,
-    ) = SyncPlan.plan(local, localSizes, remote, indexIds, state, indexHash, indexSize, sweepsHash, sweepsSize, csv, degraded)
-
-    @Test
-    fun aLostLocalIndexDeletesNothing() {
-        // The index could not be read: the local list is empty, the mirrored set is not. The folder is the copy.
-        val r = remote("a.bin", "b.bin", "index.json", "sweeps.json")
-        val state = SyncState(mirrored = setOf("a", "b"), indexHash = "i1", sweepsHash = "s1")
-        val p = plan(emptyList(), r, state, indexIds = listOf("a", "b"), indexHash = "empty", degraded = true)
-        assertTrue(p.filesToDelete.isEmpty())
-        assertTrue(p.releasedIds.isEmpty())
-        assertFalse(p.writeIndex)
-        assertFalse(p.writeSweeps)
-        assertTrue(p.frozenByDegradedIndex)
-        // A new recording made meanwhile still gets its file written.
-        assertEquals(listOf("new"), plan(listOf("new"), r, state, indexIds = listOf("a", "b"), indexHash = "x", degraded = true).binsToWrite)
-    }
+    ) = SyncPlan.plan(local, localSizes, remote, indexIds, deleted, state, indexHash, indexSize, sweepsHash, sweepsSize, csv)
 
     @Test
     fun firstPassWritesEverything() {
@@ -49,7 +34,7 @@ class SyncPlanTest {
         assertTrue(p.csvToWrite.isEmpty())
         assertTrue(p.writeIndex)
         assertTrue(p.writeSweeps)
-        assertTrue(p.filesToDelete.isEmpty())
+        assertTrue(p.deletions.isEmpty())
     }
 
     @Test
@@ -78,49 +63,56 @@ class SyncPlanTest {
     }
 
     @Test
-    fun deletionsOnlyTouchFilesTheAppWrote() {
+    fun onlyExplicitDeletesRemoveFiles() {
         val r = remote("a.bin", "b.bin", "stranger.bin", "b-run.csv", "index.json", "sweeps.json")
         val state = SyncState(mirrored = setOf("a", "b"), csvNames = mapOf("b" to "b-run.csv"), indexHash = "i1", sweepsHash = "s1")
-        // b was deleted locally; stranger.bin was never ours.
-        val p = plan(listOf("a"), r, state, indexIds = listOf("a", "b"), indexHash = "i2", csv = true)
-        assertEquals(setOf("b.bin", "b-run.csv"), p.filesToDelete.toSet())
+        // b was deleted here; stranger.bin was never ours.
+        val p = plan(listOf("a"), r, state, indexIds = listOf("a", "b"), deleted = setOf("b"), indexHash = "i2", csv = true)
+        assertEquals(mapOf("b" to listOf("b.bin", "b-run.csv")), p.deletions)
+        assertEquals(listOf("b.bin", "b-run.csv"), p.filesToDelete)
         assertFalse("stranger.bin" in p.filesToDelete)
-        assertEquals(setOf("b"), p.releasedIds)
+        assertTrue(p.notOnThisPhone.isEmpty())
         assertTrue(p.writeIndex)
     }
 
     @Test
-    fun aLocallyDeletedDatasetStillInTheRemoteIndexIsNotForeign() {
-        // After the first pass the remote index lists everything we had; deleting one must not freeze the mirror.
+    fun absenceFromTheLocalListIsNotADeletion() {
+        // The local index failed to load (or lost entries): nothing was deleted, so nothing goes.
         val r = remote("a.bin", "b.bin", "index.json", "sweeps.json")
         val state = SyncState(mirrored = setOf("a", "b"), indexHash = "i1", sweepsHash = "s1")
-        val p = plan(listOf("a"), r, state, indexIds = listOf("a", "b"), indexHash = "i2")
-        assertTrue(p.foreignIds.isEmpty())
+        val p = plan(emptyList(), r, state, indexIds = listOf("a", "b"), indexHash = "union")
+        assertTrue(p.deletions.isEmpty())
+        assertEquals(setOf("a", "b"), p.notOnThisPhone)
+        // The merged index (which the caller hashed) is still written; it carries a and b forward.
+        assertTrue(p.writeIndex)
+    }
+
+    @Test
+    fun aPartiallyRestoredStoreAfterRestartDeletesNothing() {
+        // Restore brought back a only; b is still in the folder, not local, not deleted. A later pass must keep it.
+        val r = remote("a.bin", "b.bin", "index.json", "sweeps.json")
+        val state = SyncState(mirrored = setOf("a"), indexHash = "i1", sweepsHash = "s1")
+        val p = plan(listOf("a"), r, state, indexIds = listOf("a", "b"))
+        assertTrue(p.deletions.isEmpty())
+        assertEquals(setOf("b"), p.notOnThisPhone)
+    }
+
+    @Test
+    fun deletedDatasetsAlreadyGoneNeedNothing() {
+        val r = remote("a.bin", "index.json", "sweeps.json")
+        val state = SyncState(mirrored = setOf("a"), indexHash = "i1", sweepsHash = "s1")
+        val p = plan(listOf("a"), r, state, indexIds = listOf("a"), deleted = setOf("b"))
+        assertTrue(p.deletions.isEmpty())
+        assertTrue(p.isEmpty)
+    }
+
+    @Test
+    fun aDeletedDatasetStillListedElsewhereIsNotOffered() {
+        // The folder's index still lists b (deleted here, deletion not yet mirrored): it is not "not on this phone".
+        val r = remote("a.bin", "b.bin", "index.json", "sweeps.json")
+        val p = plan(listOf("a"), r, SyncState(mirrored = setOf("a", "b"), indexHash = "i1", sweepsHash = "s1"), indexIds = listOf("a", "b"), deleted = setOf("b"))
+        assertTrue(p.notOnThisPhone.isEmpty())
         assertEquals(listOf("b.bin"), p.filesToDelete)
-        assertTrue(p.writeIndex)
-    }
-
-    @Test
-    fun foreignDatasetsFreezeTheIndexAndDeletions() {
-        // A new phone pointed at an old phone's folder: write our bins, but never its index or files.
-        val r = remote("old.bin", "gone.bin", "index.json", "sweeps.json")
-        val state = SyncState(mirrored = setOf("gone"))
-        val p = plan(listOf("new"), r, state, indexIds = listOf("old", "gone"))
-        assertEquals(setOf("old"), p.foreignIds)
-        assertEquals(listOf("new"), p.binsToWrite)
-        assertFalse(p.writeIndex)
-        assertFalse(p.writeSweeps)
-        assertTrue(p.filesToDelete.isEmpty())
-        assertTrue(p.releasedIds.isEmpty())
-    }
-
-    @Test
-    fun damagedRemoteFilesDoNotFreezeTheMirror() {
-        val r = remote("bad.bin", "a.bin", "index.json", "sweeps.json")
-        val state = SyncState(mirrored = setOf("a"), damaged = setOf("bad"), indexHash = "i1", sweepsHash = "s1")
-        val p = plan(listOf("a"), r, state, indexIds = listOf("a", "bad"), indexHash = "i2")
-        assertTrue(p.foreignIds.isEmpty())
-        assertTrue(p.writeIndex)
     }
 
     @Test

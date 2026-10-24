@@ -68,7 +68,10 @@ A drive recording usually starts before the drive does. On the Data tab, each
 run's menu has "Trim time range": drag the handles over the envelope, or press
 "Keep the steady part" and the app finds the longest stretch whose vibration
 level stayed within 12 dB, which leaves the door slam and the idling outside.
-Every tab uses the trimmed window from then on.
+Spectra, the spectrogram, tap analysis, the Damper tab, sweeps and the
+spectrum exports use the trimmed window from then on; the waveform still
+shows the whole run with the window marked, and "Export raw CSV" keeps every
+sample.
 
 ## Finding the problem mode
 

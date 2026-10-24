@@ -12,11 +12,15 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -33,12 +37,10 @@ data class SyncStatus(
     val lastSyncEpochMs: Long? = null,
     val mirroredCount: Int = 0,
     val lastError: String? = null,
-    /** Datasets in the folder's index that this phone lacks; the index is not written while any remain. */
-    val foreignCount: Int = 0,
-    /** Remote .bin files that failed validation on restore; they cannot be restored and do not block the mirror. */
-    val damagedCount: Int = 0,
-    /** The local index could not be fully read, so the mirror only adds files until that is sorted out. */
-    val frozenByDegradedIndex: Boolean = false,
+    /** Datasets the folder lists that are not on this phone; "Restore from folder" brings them in. */
+    val notOnThisPhone: Int = 0,
+    /** This phone's index could not be fully read; the folder keeps its own entries, so nothing is lost there. */
+    val indexDegraded: Boolean = false,
 )
 
 /** What a restore did, for the caller to report. */
@@ -49,31 +51,44 @@ data class RestoreResult(val restored: Int, val skipped: List<String>)
  * picker (Google Drive, Dropbox, a local folder: anything with a documents
  * provider). The provider does the uploading, so no account or API key is
  * involved here. Runs while the app is open: that is when data changes.
+ *
+ * The folder's index is a union: what this phone has plus what the folder
+ * already listed, minus datasets the user deleted here. Only those explicit
+ * deletions ever remove a file, so a phone whose own index failed to load
+ * cannot thin the folder out.
  */
 class FolderSync(private val context: Context, private val repo: DatasetRepository, private val settings: SettingsStore) {
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val stateFile = File(context.filesDir, "sync-state.json")
     private val mutex = Mutex()
+    private var scope: CoroutineScope? = null
 
     private val _status = MutableStateFlow(SyncStatus())
     val status: StateFlow<SyncStatus> = _status
 
+    /** One-line outcomes of user-requested work (restore), for the snackbar. */
+    private val _events = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val events: SharedFlow<String> = _events
+
     /** Watches the store and the settings; a change schedules a pass a few seconds later. */
     @OptIn(FlowPreview::class)
     fun start(scope: CoroutineScope) {
+        this.scope = scope
         scope.launch {
             repo.load()
-            combine(repo.datasets, repo.sweeps, settings.app) { _, _, app -> app }
+            // Only the sync fields matter here; an analysis-settings edit must not schedule a pass.
+            val syncSettings = settings.app.map { Triple(it.syncTreeUri, it.syncEnabled, it.syncCsv) }.distinctUntilChanged()
+            combine(repo.datasets, repo.sweeps, repo.deletedIds, syncSettings) { _, _, _, s -> s }
                 .debounce(3_000)
-                .collect { app ->
-                    val tree = app.syncTreeUri?.takeIf { app.syncEnabled } ?: run {
+                .collect { (treeUri, enabled, csv) ->
+                    val tree = treeUri?.takeIf { enabled } ?: run {
                         _status.value = SyncStatus()
                         return@collect
                     }
                     // Nothing may end this loop, or the process: a bad grant is a status line, not a crash.
                     try {
-                        syncNow(Uri.parse(tree), app.syncCsv)
+                        syncNow(Uri.parse(tree), csv)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -83,7 +98,33 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         }
     }
 
-    /** One mirror pass; safe to call from the UI's "Sync now". */
+    /** "Sync now": runs on the long-lived scope, so backing out of the app does not cut it short. */
+    fun requestSync(tree: Uri, csv: Boolean) {
+        val s = scope ?: return
+        s.launch { syncNow(tree, csv) }
+    }
+
+    /** "Restore from folder": result arrives on [events]. */
+    fun requestRestore(tree: Uri) {
+        val s = scope ?: return
+        s.launch {
+            val message = try {
+                val result = restore(tree)
+                buildString {
+                    append(if (result.restored == 0) "Nothing new in the folder" else "Restored ${result.restored} dataset${if (result.restored == 1) "" else "s"}")
+                    if (result.skipped.isNotEmpty())
+                        append("; ${result.skipped.size} could not be read: ${result.skipped.joinToString()}")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                "Could not restore from the folder: ${e.message ?: e.javaClass.simpleName}"
+            }
+            _events.emit(message)
+        }
+    }
+
+    /** One mirror pass. */
     suspend fun syncNow(tree: Uri, csv: Boolean) = withContext(Dispatchers.IO) {
         mutex.withLock {
             _status.value = _status.value.copy(syncing = true)
@@ -92,48 +133,59 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                 _status.value = _status.value.copy(folderName = folderName(tree))
                 val outcome = mirror(tree, csv)
                 _status.value = _status.value.copy(
-                    syncing = false,
                     lastSyncEpochMs = System.currentTimeMillis(),
                     mirroredCount = outcome.mirrored,
                     lastError = null,
-                    foreignCount = outcome.foreign,
-                    damagedCount = outcome.damaged,
-                    frozenByDegradedIndex = outcome.degraded,
+                    notOnThisPhone = outcome.notOnThisPhone,
+                    indexDegraded = repo.degraded.value,
                 )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _status.value = _status.value.copy(syncing = false, lastError = e.message ?: e.javaClass.simpleName)
+                _status.value = _status.value.copy(lastError = e.message ?: e.javaClass.simpleName)
+            } finally {
+                _status.value = _status.value.copy(syncing = false)
             }
         }
     }
 
-    private class MirrorOutcome(val mirrored: Int, val foreign: Int, val damaged: Int, val degraded: Boolean)
+    private class MirrorOutcome(val mirrored: Int, val notOnThisPhone: Int)
 
-    private fun mirror(tree: Uri, csv: Boolean): MirrorOutcome {
+    private suspend fun mirror(tree: Uri, csv: Boolean): MirrorOutcome {
         val remote = listChildren(tree)
         val state = loadState()
         val metas = repo.datasets.value
-        val indexBytes = DatasetRepository.indexJson.encodeToString(metas).toByteArray(Charsets.UTF_8)
-        val sweepsBytes = DatasetRepository.indexJson.encodeToString(repo.sweeps.value).toByteArray(Charsets.UTF_8)
+        val deleted = repo.deletedIds.value
+        val localIds = metas.map { it.id }.toSet()
+
+        // The folder's index carries forward entries this phone does not have, unless they were deleted here.
+        val remoteIndex = remoteIndex(remote)
+        val carried = remoteIndex.filter { it.id !in localIds && it.id !in deleted && "${it.id}.bin" in remote }
+        val mergedIndex = metas + carried
+        val remoteSweeps = remoteSweeps(remote)
+        val localSweepIds = repo.sweeps.value.map { it.id }.toSet()
+        val mergedSweeps = repo.sweeps.value + remoteSweeps.filter { it.id !in localSweepIds && it.id !in deleted }
+        val indexBytes = DatasetRepository.indexJson.encodeToString(mergedIndex).toByteArray(Charsets.UTF_8)
+        val sweepsBytes = DatasetRepository.indexJson.encodeToString(mergedSweeps).toByteArray(Charsets.UTF_8)
         val indexHash = sha1(indexBytes)
         val sweepsHash = sha1(sweepsBytes)
+
         val localSizes = metas.associate { it.id to repo.datasetFile(it.id).length() }
         val plan = SyncPlan.plan(
             metas.map { it.id },
             localSizes,
             remote.mapValues { RemoteFile(it.value.size) },
-            remoteIndexIds(remote),
+            remoteIndex.map { it.id },
+            deleted,
             state,
             indexHash,
             indexBytes.size.toLong(),
             sweepsHash,
             sweepsBytes.size.toLong(),
             csv,
-            degraded = repo.degraded.value,
         )
 
-        var mirrored = state.mirrored.toMutableSet()
+        val mirrored = state.mirrored.toMutableSet()
         val csvNames = state.csvNames.toMutableMap()
         for (id in plan.binsToWrite) {
             val local = repo.datasetFile(id)
@@ -157,44 +209,51 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                 csvNames[id] = name
             }
         }
-        // Only ids whose remote files really went are forgotten; a frozen pass keeps them for later.
+        // A deletion is forgotten only once every file of that dataset has really gone.
         val released = HashSet<String>()
-        for (id in plan.releasedIds) {
-            val names = listOfNotNull("$id.bin".takeIf { it in remote }, state.csvNames[id]?.takeIf { it in remote })
+        for ((id, names) in plan.deletions) {
             val ok = names.all { name -> runCatching { DocumentsContract.deleteDocument(context.contentResolver, remote.getValue(name).uri) }.getOrDefault(false) }
-            if (ok)
+            if (ok) {
                 released.add(id)
+                for (name in names)
+                    remote.remove(name)
+            }
         }
         mirrored.removeAll(released)
         for (id in released)
             csvNames.remove(id)
+        // Deleted datasets with nothing left in the folder need no more remembering either.
+        val settled = deleted.filter { id -> id in released || ("$id.bin" !in remote && state.csvNames[id]?.let { it in remote } != true) }
         if (plan.writeIndex)
             writeDocument(tree, remote, "index.json", "application/json") { it.write(indexBytes) }
         if (plan.writeSweeps)
             writeDocument(tree, remote, "sweeps.json", "application/json") { it.write(sweepsBytes) }
 
         // Every local dataset with a complete remote .bin counts as mirrored, whoever wrote it.
-        mirrored = (mirrored + metas.map { it.id }.filter { id -> id in plan.binsToWrite || remote["$id.bin"]?.let { it.size < 0 || it.size == localSizes[id] } == true }).toMutableSet()
-        val frozen = plan.foreignIds.isNotEmpty() || plan.frozenByDegradedIndex
-        saveState(
-            state.copy(
-                mirrored = mirrored,
-                csvNames = csvNames,
-                indexHash = if (plan.writeIndex || !frozen) indexHash else state.indexHash,
-                sweepsHash = if (plan.writeSweeps || !frozen) sweepsHash else state.sweepsHash,
-                damaged = state.damaged.filter { "$it.bin" in remote }.toSet(),
-            )
-        )
-        return MirrorOutcome(metas.count { it.id in mirrored }, plan.foreignIds.size, state.damaged.count { "$it.bin" in remote }, plan.frozenByDegradedIndex)
+        for (meta in metas) {
+            val r = remote["${meta.id}.bin"]
+            if (meta.id in plan.binsToWrite || (r != null && (r.size < 0 || r.size == localSizes[meta.id])))
+                mirrored.add(meta.id)
+        }
+        saveState(SyncState(mirrored, csvNames, indexHash, sweepsHash))
+        if (settled.isNotEmpty())
+            repo.forgetDeleted(settled.toSet())
+        return MirrorOutcome(metas.count { it.id in mirrored }, plan.notOnThisPhone.size)
     }
 
-    /** Dataset ids the folder's own index lists; empty when there is none or it cannot be read. */
-    private fun remoteIndexIds(remote: Map<String, Child>): List<String> {
+    /** The folder's own index; empty when there is none or it cannot be read. Only UUID-shaped ids are trusted. */
+    private fun remoteIndex(remote: Map<String, Child>): List<DatasetMeta> {
         val uri = remote["index.json"]?.uri ?: return emptyList()
         val text = runCatching { context.contentResolver.openInputStream(uri)?.use { String(it.readBytes(), Charsets.UTF_8) } }.getOrNull() ?: return emptyList()
-        return runCatching { DatasetRepository.indexJson.decodeFromString<List<DatasetMeta>>(DatasetRepository.migrateIndex(text)).map { it.id } }
+        return runCatching { DatasetRepository.indexJson.decodeFromString<List<DatasetMeta>>(DatasetRepository.migrateIndex(text)) }
             .getOrDefault(emptyList())
-            .filter { ID_SHAPE.matches(it) }
+            .filter { ID_SHAPE.matches(it.id) }
+    }
+
+    private fun remoteSweeps(remote: Map<String, Child>): List<Sweep> {
+        val uri = remote["sweeps.json"]?.uri ?: return emptyList()
+        val text = runCatching { context.contentResolver.openInputStream(uri)?.use { String(it.readBytes(), Charsets.UTF_8) } }.getOrNull() ?: return emptyList()
+        return runCatching { DatasetRepository.indexJson.decodeFromString<List<Sweep>>(text) }.getOrDefault(emptyList()).filter { ID_SHAPE.matches(it.id) }
     }
 
     private companion object {
@@ -204,54 +263,57 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
 
     /**
      * Brings datasets and sweeps from the folder that this phone does not have.
-     * Existing ids are left alone, so a restore after a reinstall or on a
-     * second phone never duplicates anything. Returns how many datasets came in.
+     * Existing ids and ids deleted on this phone are left alone, so a restore
+     * after a reinstall or on a second phone never duplicates or resurrects
+     * anything. Files that cannot be read now stay in the folder for a later
+     * try; nothing marks them off.
      */
     suspend fun restore(tree: Uri): RestoreResult = withContext(Dispatchers.IO) {
         mutex.withLock {
             val remote = listChildren(tree)
-            val indexUri = remote["index.json"]?.uri ?: throw IllegalStateException("No index.json in that folder")
-            val indexText = context.contentResolver.openInputStream(indexUri)?.use { String(it.readBytes(), Charsets.UTF_8) }
-                ?: throw IllegalStateException("Could not read index.json")
-            // Ids become file names inside the sandbox; only the shape this app generates is accepted.
-            val metas = DatasetRepository.indexJson.decodeFromString<List<DatasetMeta>>(DatasetRepository.migrateIndex(indexText))
-                .filter { ID_SHAPE.matches(it.id) }
-            val sweeps = remote["sweeps.json"]?.let { f ->
-                context.contentResolver.openInputStream(f.uri)?.use { String(it.readBytes(), Charsets.UTF_8) }
-            }?.let { runCatching { DatasetRepository.indexJson.decodeFromString<List<Sweep>>(it) }.getOrNull() } ?: emptyList()
-
+            if ("index.json" !in remote)
+                throw IllegalStateException("No index.json in that folder")
+            val metas = remoteIndex(remote)
+            val sweeps = remoteSweeps(remote)
             val have = repo.datasets.value.map { it.id }.toSet()
+            val deleted = repo.deletedIds.value
             val incoming = ArrayList<DatasetMeta>()
             val skipped = ArrayList<String>()
-            val damaged = HashSet<String>()
-            for (meta in metas) {
-                if (meta.id in have)
-                    continue
-                val binUri = remote["${meta.id}.bin"]?.uri ?: continue
-                val target = repo.datasetFile(meta.id)
-                val tmp = File(target.path + ".restore")
-                try {
-                    context.contentResolver.openInputStream(binUri)?.use { input -> tmp.outputStream().use { input.copyTo(it) } }
-                        ?: throw IllegalStateException("Could not read ${meta.id}.bin")
-                    // Refuse a truncated or foreign file before it becomes a dataset.
-                    DatasetRepository.validateSeriesFile(tmp)
-                    if (!tmp.renameTo(target))
-                        throw IllegalStateException("Could not place ${meta.id}.bin")
-                    incoming.add(meta)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    // One bad file must not abandon the rest of the restore, nor freeze later passes.
-                    skipped.add("${meta.name} (${e.message ?: e.javaClass.simpleName})")
-                    damaged.add(meta.id)
-                } finally {
-                    tmp.delete()
+            try {
+                for (meta in metas) {
+                    if (meta.id in have || meta.id in deleted)
+                        continue
+                    val binUri = remote["${meta.id}.bin"]?.uri ?: continue
+                    val target = repo.datasetFile(meta.id)
+                    val tmp = File(target.path + ".restore")
+                    try {
+                        context.contentResolver.openInputStream(binUri)?.use { input -> tmp.outputStream().use { input.copyTo(it) } }
+                            ?: throw IllegalStateException("could not be read")
+                        // Refuse a truncated or foreign file before it becomes a dataset.
+                        DatasetRepository.validateSeriesFile(tmp)
+                        if (!tmp.renameTo(target))
+                            throw IllegalStateException("could not be placed")
+                        incoming.add(meta)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // One bad or unreachable file must not abandon the rest of the restore.
+                        skipped.add("${meta.name} (${e.message ?: e.javaClass.simpleName})")
+                    } finally {
+                        tmp.delete()
+                    }
+                }
+            } finally {
+                // Whatever was copied in is registered, even if the loop was cut short.
+                withContext(NonCancellable) {
+                    if (incoming.isNotEmpty() || sweeps.isNotEmpty())
+                        repo.adopt(incoming, sweeps.filter { it.id !in deleted })
+                    if (incoming.isNotEmpty()) {
+                        val state = loadState()
+                        saveState(state.copy(mirrored = state.mirrored + incoming.map { it.id }))
+                    }
                 }
             }
-            repo.adopt(incoming, sweeps)
-            // The restored files are already in the folder, so they count as mirrored.
-            val state = loadState()
-            saveState(state.copy(mirrored = state.mirrored + incoming.map { it.id }, damaged = state.damaged + damaged))
             RestoreResult(incoming.size, skipped)
         }
     }

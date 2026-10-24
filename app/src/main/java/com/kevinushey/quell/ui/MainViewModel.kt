@@ -110,6 +110,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 repo.problemsShown()
             }
         }
+        viewModelScope.launch { sync.events.collect { _messages.emit(it) } }
     }
 
     /**
@@ -341,31 +342,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             syncNow()
     }
 
+    /** Runs on the sync's own scope, so leaving the screen or the app does not cut the pass short. */
     fun syncNow() {
         val app = _appSettings.value
         val tree = app.syncTreeUri?.takeIf { app.syncEnabled } ?: return
-        viewModelScope.launch { sync.syncNow(Uri.parse(tree), app.syncCsv) }
+        sync.requestSync(Uri.parse(tree), app.syncCsv)
     }
 
-    /** Pulls datasets and sweeps this phone lacks from the mirror folder. */
+    /** Pulls datasets and sweeps this phone lacks from the mirror folder; the outcome arrives as a message. */
     fun restoreFromSync() {
         val tree = _appSettings.value.syncTreeUri ?: return
-        launchReporting("restore from the folder") {
-            _busy.value++
-            try {
-                val result = sync.restore(Uri.parse(tree))
-                val n = result.restored
-                _messages.tryEmit(
-                    buildString {
-                        append(if (n == 0) "Nothing new in the folder" else "Restored $n dataset${if (n == 1) "" else "s"}")
-                        if (result.skipped.isNotEmpty())
-                            append("; ${result.skipped.size} could not be read: ${result.skipped.joinToString()}")
-                    }
-                )
-            } finally {
-                _busy.value--
-            }
-        }
+        sync.requestRestore(Uri.parse(tree))
     }
 
     suspend fun series(id: String): TimeSeries? = repo.series(id)

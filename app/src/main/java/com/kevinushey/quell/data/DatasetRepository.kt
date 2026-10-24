@@ -35,6 +35,7 @@ class DatasetRepository(private val context: Context) {
     private val dir: File = File(context.filesDir, "datasets").apply { mkdirs() }
     private val indexFile = File(dir, "index.json")
     private val sweepsFile = File(dir, "sweeps.json")
+    private val deletedFile = File(dir, "deleted.json")
     private val mutex = Mutex()
     private val cache = ByteBudgetCache<String, TimeSeries>(ByteBudgetCache.defaultBudget()) { it.size.toLong() * 4 * 8 }
     private var loaded = false
@@ -52,6 +53,14 @@ class DatasetRepository(private val context: Context) {
      */
     private val _degraded = MutableStateFlow(false)
     val degraded: StateFlow<Boolean> = _degraded
+
+    /**
+     * Ids (datasets and sweeps) the user deleted on this phone that a mirror
+     * may still hold. Only these are ever removed from a folder: a dataset
+     * merely missing from the list proves nothing.
+     */
+    private val _deletedIds = MutableStateFlow<Set<String>>(emptySet())
+    val deletedIds: StateFlow<Set<String>> = _deletedIds
 
     /** Problems that lost or endangered data, for the UI to surface. */
     // Replayed: the store may load (and complain) from the application scope before any screen listens.
@@ -75,6 +84,7 @@ class DatasetRepository(private val context: Context) {
             return
         loaded = true
         loadSweepsLocked()
+        _deletedIds.value = runCatching { json.decodeFromString<Set<String>>(String(AtomicFile(deletedFile).readFully(), Charsets.UTF_8)) }.getOrDefault(emptySet())
         val atomic = AtomicFile(indexFile)
         if (!indexFile.exists() && !File(dir, "index.json.bak").exists())
             return
@@ -276,9 +286,29 @@ class DatasetRepository(private val context: Context) {
             loadLocked()
             File(dir, "$id.bin").delete()
             cache.remove(id)
-            _datasets.value = _datasets.value.filterNot { it.id == id }
-            persistIndex()
+            val next = _datasets.value.filterNot { it.id == id }
+            persistIndex(next)
+            _datasets.value = next
+            rememberDeleted(id)
         }
+    }
+
+    /** The mirror has removed (or never had) these; stop remembering them. */
+    suspend fun forgetDeleted(ids: Set<String>) = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val next = _deletedIds.value - ids
+            if (next != _deletedIds.value) {
+                writeAtomic(deletedFile, json.encodeToString(next))
+                _deletedIds.value = next
+            }
+        }
+    }
+
+    private fun rememberDeleted(id: String) {
+        val next = _deletedIds.value + id
+        // Losing this file only means a deletion is not mirrored; never let it fail the delete itself.
+        runCatching { writeAtomic(deletedFile, json.encodeToString(next)) }
+        _deletedIds.value = next
     }
 
     suspend fun addSweep(sweep: Sweep) = withContext(Dispatchers.IO) {
@@ -309,6 +339,7 @@ class DatasetRepository(private val context: Context) {
             _datasets.value = released
             persistSweeps(remaining)
             _sweeps.value = remaining
+            rememberDeleted(id)
         }
     }
 

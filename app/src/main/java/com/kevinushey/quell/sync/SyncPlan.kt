@@ -12,8 +12,6 @@ data class SyncState(
     /** Content fingerprints of the last index.json and sweeps.json written. */
     val indexHash: String? = null,
     val sweepsHash: String? = null,
-    /** Ids whose remote .bin failed validation on restore; not ours, not restorable, not a reason to freeze. */
-    val damaged: Set<String> = emptySet(),
 )
 
 /** A file in the mirror folder: its size when the provider reports one, else -1. */
@@ -23,41 +21,39 @@ data class RemoteFile(val size: Long)
 class SyncPlan(
     val binsToWrite: List<String>,
     val csvToWrite: List<String>,
-    /** Remote file names to delete: mirrors of datasets that no longer exist locally. */
-    val filesToDelete: List<String>,
-    /** Ids whose mirrored files are gone after this pass, to drop from the state. */
-    val releasedIds: Set<String>,
+    /** Remote files to delete, grouped by the dataset id they belong to: only datasets the user deleted here. */
+    val deletions: Map<String, List<String>>,
     val writeIndex: Boolean,
     val writeSweeps: Boolean,
-    /** Datasets in the folder's index that are neither local nor ours: someone else's store, left untouched. */
-    val foreignIds: Set<String>,
-    /** The local list is known to be incomplete, so nothing was deleted and the folder's index was kept. */
-    val frozenByDegradedIndex: Boolean = false,
+    /** Datasets the folder's index lists that are not on this phone (and were not deleted here): a restore would bring them in. */
+    val notOnThisPhone: Set<String>,
 ) {
-    val isEmpty: Boolean get() = binsToWrite.isEmpty() && csvToWrite.isEmpty() && filesToDelete.isEmpty() && !writeIndex && !writeSweeps
+    val filesToDelete: List<String> get() = deletions.values.flatten()
+    val isEmpty: Boolean get() = binsToWrite.isEmpty() && csvToWrite.isEmpty() && deletions.isEmpty() && !writeIndex && !writeSweeps
 
     companion object {
         /**
          * Bins are immutable, so one copy per id is enough; a missing remote
          * file, or one whose size disagrees with the local file (a copy cut
-         * short), is written again. Deletions only ever touch files this app
-         * wrote. A folder holding datasets that are neither local nor ours
-         * is someone else's store (an old phone's, say): its index is left
-         * alone until they are restored.
+         * short), is written again. Only datasets the user deleted on this
+         * phone are ever deleted from the folder: absence from the local list
+         * proves nothing (the index may have failed to load), so it is never
+         * read as a deletion. The folder's index is the union of what is here
+         * and what the folder already listed, minus those deletions, so a
+         * phone that lost entries, or a second phone, cannot thin it out.
          */
         fun plan(
             localIds: List<String>,
             localBinSizes: Map<String, Long>,
             remote: Map<String, RemoteFile>,
             remoteIndexIds: List<String>,
+            deletedIds: Set<String>,
             state: SyncState,
             indexHash: String,
             indexSize: Long,
             sweepsHash: String,
             sweepsSize: Long,
             csv: Boolean,
-            /** The local index could not be fully read; absence from the local list means nothing. */
-            degraded: Boolean = false,
         ): SyncPlan {
             val local = localIds.toSet()
             fun complete(name: String, expected: Long?): Boolean {
@@ -66,29 +62,22 @@ class SyncPlan(
             }
             val bins = localIds.filter { !complete("$it.bin", localBinSizes[it]) }
             val csvs = if (csv) localIds.filter { id -> state.csvNames[id]?.let { it !in remote } ?: true } else emptyList()
-            // Ours: anything we mirrored or wrote, whether or not it is still local. Damaged files are known, not foreign.
-            val foreign = remoteIndexIds.filter { it !in local && it !in state.mirrored && it !in state.damaged && "$it.bin" in remote }.toSet()
-            if (foreign.isNotEmpty())
-                return SyncPlan(bins, csvs, emptyList(), emptySet(), writeIndex = false, writeSweeps = false, foreignIds = foreign)
-            // With the local index lost, the folder may be the only complete copy: write new bins, touch nothing else.
-            if (degraded)
-                return SyncPlan(bins, csvs, emptyList(), emptySet(), writeIndex = false, writeSweeps = false, foreignIds = emptySet(), frozenByDegradedIndex = true)
-
-            val gone = state.mirrored.filter { it !in local }
-            val deletions = ArrayList<String>()
-            for (id in gone) {
-                if ("$id.bin" in remote)
-                    deletions.add("$id.bin")
-                state.csvNames[id]?.let { if (it in remote) deletions.add(it) }
+            val deletions = LinkedHashMap<String, List<String>>()
+            for (id in deletedIds) {
+                if (id in local)
+                    continue
+                val names = listOfNotNull("$id.bin".takeIf { it in remote }, state.csvNames[id]?.takeIf { it in remote })
+                if (names.isNotEmpty())
+                    deletions[id] = names
             }
+            val elsewhere = remoteIndexIds.filter { it !in local && it !in deletedIds && "$it.bin" in remote }.toSet()
             return SyncPlan(
                 binsToWrite = bins,
                 csvToWrite = csvs,
-                filesToDelete = deletions,
-                releasedIds = gone.toSet(),
+                deletions = deletions,
                 writeIndex = indexHash != state.indexHash || !complete("index.json", indexSize),
                 writeSweeps = sweepsHash != state.sweepsHash || !complete("sweeps.json", sweepsSize),
-                foreignIds = emptySet(),
+                notOnThisPhone = elsewhere,
             )
         }
     }

@@ -74,28 +74,21 @@ fun SettingsScreen(vm: MainViewModel, onOpenGuide: () -> Unit) {
             sync.lastError?.let {
                 Text("Last error: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
-            if (sync.frozenByDegradedIndex) {
+            if (sync.indexDegraded) {
                 Text(
-                    "This phone's dataset index could not be fully read, so the folder's copies are being kept as they are. Use \"Restore from folder\" to bring them back.",
+                    "This phone's dataset index could not be fully read. The folder keeps its own entries, so nothing is lost there; \"Restore from folder\" brings the missing runs back.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
             }
-            if (sync.damagedCount > 0) {
+            if (sync.notOnThisPhone > 0) {
                 Text(
-                    "${sync.damagedCount} file${if (sync.damagedCount == 1) "" else "s"} in the folder could not be read as a dataset and will be ignored.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-            if (sync.foreignCount > 0) {
-                Text(
-                    "The folder holds ${sync.foreignCount} dataset${if (sync.foreignCount == 1) "" else "s"} this phone does not have. Restore them first; until then the folder's index is left as it is.",
+                    "The folder holds ${sync.notOnThisPhone} dataset${if (sync.notOnThisPhone == 1) "" else "s"} this phone does not have. \"Restore from folder\" brings them in; they stay in the folder either way.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.tertiary,
                 )
             }
-            SwitchRow("Mirror automatically", "Copies new and changed data a few seconds after each change while the app is open", app.syncEnabled) { on ->
+            SwitchRow("Mirror automatically", "Copies new and changed data a few seconds after each change while the app is open. Only runs you delete here are removed from the folder.", app.syncEnabled) { on ->
                 vm.updateAppSettings { it.copy(syncEnabled = on) }
                 if (on)
                     vm.syncNow()
