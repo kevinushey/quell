@@ -202,6 +202,31 @@ class ParserTest {
     }
 
     @Test
+    fun rangeReadMatchesInMemorySlice() {
+        val n = 1000
+        val series = com.kevinushey.quell.data.TimeSeries(
+            DoubleArray(n) { it / 100.0 },
+            DoubleArray(n) { it.toDouble() },
+            DoubleArray(n) { -it.toDouble() },
+            DoubleArray(n) { 9.81 },
+        )
+        val file = java.io.File.createTempFile("quell", ".bin")
+        try {
+            DatasetRepository.writeSeries(file, series)
+            val fromDisk = DatasetRepository.readSeriesRange(file, 2.0, 3.0)
+            val inMemory = series.sliceTime(2.0, 3.0)
+            assertEquals(inMemory.size, fromDisk.size)
+            assertEquals(100, fromDisk.size)
+            assertEquals(200.0, fromDisk.x[0], 0.0)
+            assertEquals(-299.0, fromDisk.y[99], 0.0)
+            assertEquals(2.0, fromDisk.time[0], 1e-12)
+            assertEquals(0, DatasetRepository.readSeriesRange(file, 50.0, 60.0).size)
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
     fun defaultNameStripsPhyphoxPrefix() {
         assertEquals("2026-10-20 14-14-14 Baseline", DatasetRepository.defaultName("Acceleration with g 2026-10-20 14-14-14 Baseline.zip"))
         assertEquals("run1", DatasetRepository.defaultName("run1.csv"))

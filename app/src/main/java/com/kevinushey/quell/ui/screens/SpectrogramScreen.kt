@@ -62,16 +62,23 @@ fun SpectrogramScreen(vm: MainViewModel, exportHost: ChartExportHost) {
     }
     val selected = candidates.firstOrNull { it.id == selectedId } ?: candidates.first()
 
-    val data by produceState<SpectrogramData?>(null, selected.id, selected.trimStart, selected.trimEnd, settings.channel, settings.segmentSize, settings.window) {
+    // null = computing; a failed Result is terminal and must not look like a spinner forever.
+    val data by produceState<Result<SpectrogramData>?>(null, selected.id, selected.trimStart, selected.trimEnd, settings.channel, settings.segmentSize, settings.window) {
         value = null
-        val r = vm.resampled(selected) ?: return@produceState
-        value = withContext(Dispatchers.Default) {
-            // Shorter segments than the PSD view: time resolution matters more here.
-            val seg = (settings.segmentSize / 2).coerceAtLeast(256)
-            if (settings.channel == Channel.TOTAL)
-                Spectrogram.computeTotal(r.x, r.y, r.z, r.sampleRate, seg, settings.window)
-            else
-                Spectrogram.compute(r.channel(settings.channel), r.sampleRate, seg, settings.window)
+        val r = vm.resampled(selected)
+        if (r == null) {
+            value = Result.failure(IllegalStateException("This run could not be analyzed. Adjust its analysis window on the Data tab to exclude any gap."))
+            return@produceState
+        }
+        value = runCatching {
+            withContext(Dispatchers.Default) {
+                // Shorter segments than the PSD view: time resolution matters more here.
+                val seg = (settings.segmentSize / 2).coerceAtLeast(256)
+                if (settings.channel == Channel.TOTAL)
+                    Spectrogram.computeTotal(r.x, r.y, r.z, r.sampleRate, seg, settings.window)
+                else
+                    Spectrogram.compute(r.channel(settings.channel), r.sampleRate, seg, settings.window)
+            }
         }
     }
 
@@ -96,9 +103,18 @@ fun SpectrogramScreen(vm: MainViewModel, exportHost: ChartExportHost) {
         }
 
         ChartCard(legend = emptyList(), exportHost = exportHost, modifier = Modifier.weight(1f).fillMaxWidth(), title = selected.name) {
-            val d = data
-            if (d == null) {
+            val result = data
+            val d = result?.getOrNull()
+            if (result == null) {
                 androidx.compose.foundation.layout.Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            } else if (d == null) {
+                androidx.compose.foundation.layout.Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+                    Text(
+                        result.exceptionOrNull()?.message ?: "Analysis failed.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
             } else {
                 val maxF = if (settings.maxFreq > 0) settings.maxFreq else d.freq.last()
                 SpectrogramChart(data = d, maxFreq = maxF, dynamicRangeDb = dynamicRange.toDouble())

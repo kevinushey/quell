@@ -14,6 +14,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -41,10 +44,23 @@ fun ChartCard(
     chart: @Composable () -> Unit,
 ) {
     val bg = MaterialTheme.colorScheme.surface
+    // Clear the registration when this card leaves composition, but only if it is still ours:
+    // another card on the same screen may have taken over in the meantime.
+    val mine = remember { arrayOfNulls<Rect>(1) }
+    DisposableEffect(exportHost) {
+        onDispose {
+            if (exportHost != null && exportHost.bounds == mine[0])
+                exportHost.bounds = null
+        }
+    }
     Column(
         modifier = modifier
             .then(
-                if (exportHost != null) Modifier.onGloballyPositioned { exportHost.bounds = it.boundsInWindow() } else Modifier
+                if (exportHost != null) Modifier.onGloballyPositioned {
+                    val b = it.boundsInWindow()
+                    mine[0] = b
+                    exportHost.bounds = b
+                } else Modifier
             )
             .background(bg)
             .padding(horizontal = 8.dp, vertical = 4.dp),

@@ -33,6 +33,29 @@ class TimeSeries(
     }
 
     fun magnitude(): DoubleArray = DoubleArray(size) { Math.sqrt(x[it] * x[it] + y[it] * y[it] + z[it] * z[it]) }
+
+    /** Samples with absolute time in [from, to]. */
+    fun sliceTime(from: Double, to: Double): TimeSeries {
+        var lo = 0
+        var hi = size
+        while (lo < hi) {
+            val mid = (lo + hi) ushr 1
+            if (time[mid] < from)
+                lo = mid + 1
+            else
+                hi = mid
+        }
+        var end = lo
+        var hi2 = size
+        while (end < hi2) {
+            val mid = (end + hi2) ushr 1
+            if (time[mid] < to)
+                end = mid + 1
+            else
+                hi2 = mid
+        }
+        return TimeSeries(time.copyOfRange(lo, end), x.copyOfRange(lo, end), y.copyOfRange(lo, end), z.copyOfRange(lo, end))
+    }
 }
 
 @Serializable

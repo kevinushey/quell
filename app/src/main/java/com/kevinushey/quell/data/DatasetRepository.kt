@@ -124,7 +124,27 @@ class DatasetRepository(private val context: Context) {
         }
     }
 
-    /** Drops cached samples so a large save or import has the heap to itself; they reload on demand. */
+    /**
+     * Samples with time in [from, to]. Served from the cache when the run is
+     * loaded; otherwise only that slice is read from disk, so zooming into a
+     * long run never pulls the whole file through the cache.
+     */
+    suspend fun seriesRange(id: String, from: Double, to: Double): TimeSeries? = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            cache[id]?.let { return@withLock it.sliceTime(from, to) }
+            val file = File(dir, "$id.bin")
+            if (!file.exists())
+                return@withLock null
+            try {
+                readSeriesRange(file, from, to)
+            } catch (e: Exception) {
+                _problems.tryEmit("Could not read the samples of a dataset: ${e.message ?: e.javaClass.simpleName}")
+                null
+            }
+        }
+    }
+
+    /** Drops cached samples so a large save or import has the heap to themselves; they reload on demand. */
     suspend fun releaseSamples() = mutex.withLock { cache.clear() }
 
     /** Reads under the mutex so a concurrent delete() cannot remove the file mid-read. */
@@ -272,6 +292,45 @@ class DatasetRepository(private val context: Context) {
                 for (arr in arrayOf(s.time, s.x, s.y, s.z))
                     for (v in arr)
                         out.writeDouble(v)
+            }
+        }
+
+        private const val HEADER_BYTES = 8L
+
+        /** Reads only the samples with time in [from, to], seeking within the four fixed-width arrays. */
+        fun readSeriesRange(file: File, from: Double, to: Double): TimeSeries {
+            java.io.RandomAccessFile(file, "r").use { raf ->
+                if (raf.readInt() != MAGIC)
+                    throw IllegalStateException("Bad dataset file")
+                val n = raf.readInt()
+                fun timeAt(i: Int): Double {
+                    raf.seek(HEADER_BYTES + i.toLong() * 8)
+                    return raf.readDouble()
+                }
+                fun lowerBound(target: Double): Int {
+                    var lo = 0
+                    var hi = n
+                    while (lo < hi) {
+                        val mid = (lo + hi) ushr 1
+                        if (timeAt(mid) < target)
+                            lo = mid + 1
+                        else
+                            hi = mid
+                    }
+                    return lo
+                }
+                val a = lowerBound(from)
+                val b = lowerBound(to).coerceAtMost(n)
+                val count = (b - a).coerceAtLeast(0)
+                val arrays = Array(4) { DoubleArray(count) }
+                val bytes = java.nio.ByteBuffer.allocate(count * 8)
+                for (k in 0 until 4) {
+                    raf.seek(HEADER_BYTES + (k.toLong() * n + a) * 8)
+                    bytes.clear()
+                    raf.readFully(bytes.array(), 0, count * 8)
+                    bytes.asDoubleBuffer().get(arrays[k])
+                }
+                return TimeSeries(arrays[0], arrays[1], arrays[2], arrays[3])
             }
         }
 

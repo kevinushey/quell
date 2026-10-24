@@ -481,16 +481,19 @@ private fun TrimDialog(vm: MainViewModel, meta: DatasetMeta, onDismiss: () -> Un
 
 @Composable
 private fun TapResultsDialog(vm: MainViewModel, meta: DatasetMeta, threshold: Double, onDismiss: () -> Unit) {
-    val summary by androidx.compose.runtime.produceState<com.kevinushey.quell.ui.TapSummary?>(null, meta.id, meta.trimStart, meta.trimEnd, threshold) {
-        value = vm.tapSummary(meta, threshold)
+    // null = analyzing; a null summary from the view model means the analysis failed, not that it is still running.
+    val summary by androidx.compose.runtime.produceState<Result<com.kevinushey.quell.ui.TapSummary>?>(null, meta.id, meta.trimStart, meta.trimEnd, threshold) {
+        val s = vm.tapSummary(meta, threshold)
+        value = if (s != null) Result.success(s) else Result.failure(IllegalStateException("analysis failed"))
     }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Ring-down analysis") },
         text = {
-            val s = summary
+            val s = summary?.getOrNull()
             when {
-                s == null -> Text("Analyzing...")
+                summary == null -> Text("Analyzing...")
+                s == null -> Text("This recording could not be analyzed. Adjust its analysis window to exclude any gap, then try again.")
                 s.count == 0 -> Text("No impulse above ${"%.1f".format(java.util.Locale.US, threshold)} m/s^2 was found. Lower the tap threshold in analysis options, or check that this is a tap-test recording.")
                 else -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     DetailLine("Taps found", s.count.toString())

@@ -65,6 +65,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Keyed by dataset id plus trim window, so editing the window recomputes. */
     private data class ResampleKey(val id: String, val trimStart: Double, val trimEnd: Double)
 
+    /** Imports and saves run one at a time: the per-file memory budget only holds if they do not overlap. */
+    private val importMutex = Mutex()
+
     private val resampledCache = ByteBudgetCache<ResampleKey, Resampled>(ByteBudgetCache.defaultBudget()) { it.size.toLong() * 4 * 8 }
     private val psdCache = LinkedHashMap<PsdKey, Pair<Spectrum, Double>>()
     private val cacheMutex = Mutex()
@@ -125,6 +128,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (uris.isEmpty())
             return
         viewModelScope.launch {
+            importMutex.withLock { importAll(uris) }
+        }
+    }
+
+    private suspend fun importAll(uris: List<Uri>) {
             _busy.value++
             releaseMemoryForSave()
             var ok = 0
@@ -151,7 +159,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             _messages.tryEmit(summary)
-        }
     }
 
     /**
@@ -164,9 +171,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Persists a recording; false means it was not saved and the caller must keep it. */
-    suspend fun addRecording(name: String, run: ParsedRun): Boolean {
+    suspend fun addRecording(name: String, run: ParsedRun): Boolean = importMutex.withLock {
         _busy.value++
-        return try {
+        try {
             releaseMemoryForSave()
             repo.add(name, "Recorded on device", run)
             _messages.tryEmit("Saved recording \"$name\"")
@@ -178,6 +185,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _busy.value--
         }
     }
+
+    /** Samples of one dataset inside an absolute time range, read from disk when the run is not cached. */
+    suspend fun seriesRange(id: String, from: Double, to: Double): TimeSeries? = repo.seriesRange(id, from, to)
 
     fun setVisible(id: String, visible: Boolean) = updateMeta(id) { it.copy(visible = visible) }
     fun rename(id: String, name: String) = updateMeta(id) { it.copy(name = name.trim().ifEmpty { it.name }) }

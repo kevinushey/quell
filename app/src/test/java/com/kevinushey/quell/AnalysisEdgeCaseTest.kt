@@ -138,6 +138,15 @@ class AnalysisEdgeCaseTest {
 
         val fine = DoubleArray(1000) { it / 400.0 }
         assertEquals(1000, Resampler.analyzablePrefix(fine, max))
+
+        // Dropping the fast tail lowers the median to 200 Hz, at which the long prefix fits.
+        val mixed = ArrayList<Double>()
+        mixed.add(0.0)
+        var u = 10_001.0
+        for (i in 0 until 20) { mixed.add(u); u += 0.005 }
+        for (i in 0 until 22) { mixed.add(u); u += 0.0025 }
+        val keptMixed = Resampler.analyzablePrefix(mixed.toDoubleArray(), max)
+        assertTrue("kept only $keptMixed", keptMixed >= 42)
     }
 
     @Test

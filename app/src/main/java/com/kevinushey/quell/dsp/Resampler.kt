@@ -63,6 +63,16 @@ object Resampler {
             val fs = estimateSampleRate(prefix)
             if (fs <= 0 || resampledLength(prefix, fs) <= maxSamples)
                 return n
+            // Dropping a fast tail can lower the median rate enough that a slightly shorter
+            // prefix fits; probe those before cutting all the way back by span.
+            for (probe in intArrayOf(n - 1, n - maxOf(2, n / 16))) {
+                if (probe < 2)
+                    continue
+                val candidate = time.copyOf(probe)
+                val pfs = estimateSampleRate(candidate)
+                if (pfs <= 0 || resampledLength(candidate, pfs) <= maxSamples)
+                    return probe
+            }
             val maxSpan = (maxSamples - 1) / fs
             var m = n
             while (m > 0 && prefix[m - 1] - prefix[0] > maxSpan)

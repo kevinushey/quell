@@ -68,11 +68,13 @@ fun WaveformScreen(vm: MainViewModel, exportHost: ChartExportHost) {
     val visibleKey = visible.map { it.id to it.colorIndex to it.name }
     var window by remember(visibleKey, channel, removeMean) { mutableStateOf<Viewport?>(null) }
     var fullBounds by remember(visibleKey, channel, removeMean) { mutableStateOf<Viewport?>(null) }
+    // Whole-run facts gathered on the full pass, so zoomed rebuilds read only the visible slice.
+    val runInfo = remember(visibleKey, channel) { HashMap<String, RunInfo>() }
     val series by produceState<List<ChartSeries>>(emptyList(), visibleKey, channel, removeMean, window) {
         val w = window
         if (w != null)
             delay(120)
-        val built = withContext(Dispatchers.Default) { buildSeries(vm, visible, channel, removeMean, w) }
+        val built = withContext(Dispatchers.Default) { buildSeries(vm, visible, channel, removeMean, w, runInfo) }
         if (w == null)
             fullBounds = computeBounds(built, AxisScale.LINEAR)
         value = built
@@ -111,12 +113,27 @@ fun WaveformScreen(vm: MainViewModel, exportHost: ChartExportHost) {
                 verticalMarkers = trimMarkers,
                 viewportKey = listOf(channel, removeMean, visible.map { it.id }),
                 fixedBounds = fullBounds,
-                onViewportChange = { vp -> window = if (fullBounds == null || vp == fullBounds) null else vp },
+                onViewportChange = { vp ->
+                    val next = if (fullBounds == null || vp == fullBounds) null else vp
+                    // Only the time range matters for which samples to load; ignore vertical-only changes.
+                    if (next?.xMin != window?.xMin || next?.xMax != window?.xMax)
+                        window = next
+                },
                 xValueFormatter = { "%.3f s".format(Locale.US, it) },
                 yValueFormatter = { "%.3f".format(Locale.US, it) },
             )
         }
     }
+}
+
+/** Start time and whole-run channel mean, learned once from the full pass. */
+private class RunInfo(val t0: Double, val mean: Double)
+
+private fun channelValues(s: com.kevinushey.quell.data.TimeSeries, channel: Channel): DoubleArray = when (channel) {
+    Channel.X -> s.x
+    Channel.Y -> s.y
+    Channel.Z -> s.z
+    else -> s.magnitude()
 }
 
 private suspend fun buildSeries(
@@ -125,50 +142,39 @@ private suspend fun buildSeries(
     channel: Channel,
     removeMean: Boolean,
     window: Viewport?,
+    runInfo: MutableMap<String, RunInfo>,
 ): List<ChartSeries> {
     val out = ArrayList<ChartSeries>()
     for (meta in visible) {
-        val s = vm.series(meta.id) ?: continue
-        val raw = when (channel) {
-            Channel.X -> s.x
-            Channel.Y -> s.y
-            Channel.Z -> s.z
-            else -> s.magnitude()
-        }
-        val t0 = s.time.firstOrNull() ?: 0.0
-        // The mean is a property of the whole run, not of the window on screen.
-        val mean = if (removeMean) raw.average() else 0.0
-
-        // Only the visible span (plus a margin for panning) is materialized, then bounded by decimation.
-        var from = 0
-        var to = s.size
-        if (window != null) {
+        val info = runInfo[meta.id]
+        val s: com.kevinushey.quell.data.TimeSeries
+        val t0: Double
+        val mean: Double
+        if (window == null || info == null) {
+            // Full pass: load the run once, remember its start and mean (a property of the whole run).
+            val full = vm.series(meta.id) ?: continue
+            if (full.size == 0)
+                continue
+            val raw = channelValues(full, channel)
+            t0 = full.time[0]
+            mean = raw.average()
+            runInfo[meta.id] = RunInfo(t0, mean)
+            s = if (window == null) full else full.sliceTime(t0 + window.xMin - window.width * 0.25, t0 + window.xMax + window.width * 0.25)
+        } else {
+            // Zoomed pass: only the visible span (plus a margin for panning) is read.
+            t0 = info.t0
+            mean = info.mean
             val margin = window.width * 0.25
-            from = lowerBound(s.time, t0 + window.xMin - margin)
-            to = lowerBound(s.time, t0 + window.xMax + margin).coerceAtMost(s.size)
-            if (to - from < 2) {
-                from = (from - 1).coerceAtLeast(0)
-                to = (to + 1).coerceAtMost(s.size)
-            }
+            s = vm.seriesRange(meta.id, t0 + window.xMin - margin, t0 + window.xMax + margin) ?: continue
         }
-        val time = DoubleArray(to - from) { s.time[from + it] - t0 }
-        val values = DoubleArray(to - from) { raw[from + it] - mean }
+        if (s.size == 0)
+            continue
+        val raw = channelValues(s, channel)
+        val offset = if (removeMean) mean else 0.0
+        val time = DoubleArray(s.size) { s.time[it] - t0 }
+        val values = DoubleArray(s.size) { raw[it] - offset }
         val d = Decimate.minMax(time, values)
         out.add(ChartSeries(meta.id, meta.name, seriesColor(meta.colorIndex), d.time, d.values, strokeWidthDp = 1.2f))
     }
     return out
-}
-
-/** First index whose time is >= target. */
-private fun lowerBound(arr: DoubleArray, target: Double): Int {
-    var lo = 0
-    var hi = arr.size
-    while (lo < hi) {
-        val mid = (lo + hi) ushr 1
-        if (arr[mid] < target)
-            lo = mid + 1
-        else
-            hi = mid
-    }
-    return lo
 }
