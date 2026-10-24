@@ -185,10 +185,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         try {
             releaseMemoryForSave()
             repo.add(name, "Recorded on device", run) { meta ->
-                if (sweep == null) meta else withSweepValue(meta, sweep, value)
+                if (sweep == null) meta else joinSweep(meta, sweep, value)
             }
-            if (sweep != null && value != null)
-                repo.updateSweep(sweep.id) { it.advanced(value) }
+            // The run is safe from here on; a failed step bookkeeping must not read as a failed save.
+            if (sweep != null && value != null) {
+                try {
+                    repo.updateSweep(sweep.id) { it.advanced(value) }
+                } catch (e: Exception) {
+                    _messages.tryEmit("Saved recording \"$name\", but the sweep's next step could not be recorded: ${e.message}")
+                    return@withLock true
+                }
+            }
             _messages.tryEmit("Saved recording \"$name\"")
             true
         } catch (e: Exception) {
@@ -253,18 +260,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun addToSweep(sweep: Sweep, metaId: String, value: Double?) = updateMeta(metaId) { withSweepValue(it, sweep, value) }
+    fun addToSweep(sweep: Sweep, metaId: String, value: Double?) = updateMeta(metaId) { joinSweep(it, sweep, value) }
 
-    fun setSweepValue(sweep: Sweep, metaId: String, value: Double?) = updateMeta(metaId) { withSweepValue(it, sweep, value) }
+    /** Sets the run's value in this sweep; null clears it (the row then asks for one). */
+    fun setSweepValue(sweep: Sweep, metaId: String, value: Double?) = updateMeta(metaId) {
+        if (sweep.parameter == SweepParameter.MASS)
+            it.copy(sweepId = sweep.id, sweepValue = null, damperMassGrams = value)
+        else
+            it.copy(sweepId = sweep.id, sweepValue = value)
+    }
 
     fun removeFromSweep(metaId: String) = updateMeta(metaId) { it.copy(sweepId = null, sweepValue = null) }
 
-    /** Mass sweeps keep the value in damperMassGrams, which the Damper tab already reads. */
-    private fun withSweepValue(meta: DatasetMeta, sweep: Sweep, value: Double?): DatasetMeta =
+    /**
+     * Membership plus an optional value. Mass sweeps keep the value in
+     * damperMassGrams, a property of the run itself; any other parameter's
+     * value belongs to the sweep it was set in, so moving between sweeps
+     * drops it rather than passing off a stiffness as a position.
+     */
+    private fun joinSweep(meta: DatasetMeta, sweep: Sweep, value: Double?): DatasetMeta {
         if (sweep.parameter == SweepParameter.MASS)
-            meta.copy(sweepId = sweep.id, sweepValue = null, damperMassGrams = value ?: meta.damperMassGrams)
-        else
-            meta.copy(sweepId = sweep.id, sweepValue = value ?: meta.sweepValue)
+            return meta.copy(sweepId = sweep.id, sweepValue = null, damperMassGrams = value ?: meta.damperMassGrams)
+        val kept = if (meta.sweepId == sweep.id) meta.sweepValue else null
+        return meta.copy(sweepId = sweep.id, sweepValue = value ?: kept)
+    }
 
     /** Spectrum of one dataset under the given settings, visible or not; served from the PSD cache when possible. */
     suspend fun spectrumResult(meta: DatasetMeta, s: AnalysisSettings): SpectrumResult? {
@@ -280,6 +299,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 failedResamples.removeAll { it.id == id }
                 psdCache.keys.removeAll { it.id == id }
                 tapCache.keys.removeAll { it.id == id }
+                failedTaps.removeAll { it.id == id }
             }
             if (_analysis.value.referenceId == id)
                 setReference(null)
@@ -298,16 +318,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private data class TapKey(val id: String, val trimStart: Double, val trimEnd: Double, val threshold: Double)
     private val tapCache = HashMap<TapKey, TapSummary>()
+    /** Tap analyses that failed; reported once, then silent until the window or threshold changes. */
+    private val failedTaps = HashSet<TapKey>()
 
     /** Ring-down analysis of every impulse in the dataset's trim window. */
     suspend fun tapSummary(meta: DatasetMeta, threshold: Double): TapSummary? {
         val key = TapKey(meta.id, meta.trimStart, meta.trimEnd, threshold)
-        cacheMutex.withLock { tapCache[key] }?.let { return it }
+        cacheMutex.withLock {
+            tapCache[key]?.let { return it }
+            if (key in failedTaps)
+                return null
+        }
         val s = repo.series(meta.id) ?: return null
-        val summary = analyzeOrReport(meta) { TapAnalysis.analyze(s.slice(meta.trimStart, meta.effectiveTrimEnd), threshold) } ?: return null
+        val summary = analyzeOrReport(meta) { TapAnalysis.analyze(s.slice(meta.trimStart, meta.effectiveTrimEnd), threshold) }
         cacheMutex.withLock {
             tapCache.keys.removeAll { it.id == meta.id && it != key }
-            tapCache[key] = summary
+            failedTaps.removeAll { it.id == meta.id }
+            if (summary == null)
+                failedTaps.add(key)
+            else
+                tapCache[key] = summary
         }
         return summary
     }

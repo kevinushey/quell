@@ -168,15 +168,16 @@ fun SweepScreen(vm: MainViewModel, sweepId: String, onRecord: (String) -> Unit, 
     val sweeps by vm.sweeps.collectAsStateWithLifecycle()
     val datasets by vm.datasets.collectAsStateWithLifecycle()
     val settings by vm.analysis.collectAsStateWithLifecycle()
+    val ready by vm.ready.collectAsStateWithLifecycle()
     val sweep = sweeps.firstOrNull { it.id == sweepId }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var dialog by remember { mutableStateOf<SweepDialog?>(null) }
     var menu by remember { mutableStateOf(false) }
 
-    // Deleted (or never loaded): there is nothing to show here.
-    LaunchedEffect(sweep == null) {
-        if (sweep == null)
+    // Deleted: there is nothing to show here. Before the index has loaded, every sweep is still missing.
+    LaunchedEffect(sweep == null, ready) {
+        if (ready && sweep == null)
             onClosed()
     }
     if (sweep == null)
@@ -210,11 +211,11 @@ fun SweepScreen(vm: MainViewModel, sweepId: String, onRecord: (String) -> Unit, 
         }
         value = SweepAnalysis.summarize(sweep, points)
     }
-    // Keep the recommendation on the sweep so the Record screen can pre-fill it.
-    LaunchedEffect(summary?.nextValue) {
-        val next = summary?.nextValue ?: return@LaunchedEffect
-        if (next != sweep.nextValue)
-            vm.updateSweep(sweep.id) { it.copy(nextValue = next) }
+    // Keep the recommendation on the sweep so the Record screen can pre-fill it; null clears a stale one.
+    LaunchedEffect(summary) {
+        val s = summary ?: return@LaunchedEffect
+        if (s.nextValue != sweep.nextValue)
+            vm.updateSweep(sweep.id) { it.copy(nextValue = s.nextValue) }
     }
 
     Column(Modifier.fillMaxSize()) {

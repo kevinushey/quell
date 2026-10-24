@@ -50,5 +50,9 @@ data class Sweep(
     val suggestedNext: Double? get() = nextValue ?: lastValue?.let { it + (step ?: 0.0) }
 
     /** Bookkeeping after a run at `value` was added; the recommendation is recomputed from the new data. */
-    fun advanced(value: Double): Sweep = copy(lastValue = value, step = lastValue?.let { value - it } ?: step, nextValue = null)
+    fun advanced(value: Double): Sweep =
+        copy(lastValue = value, step = lastValue?.let { if (value != it) value - it else step } ?: step, nextValue = null)
+
+    /** Whether the parameter can go negative; masses and stiffnesses cannot. */
+    val parameterNonNegative: Boolean get() = parameter == SweepParameter.MASS || parameter == SweepParameter.STIFFNESS
 }

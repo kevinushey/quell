@@ -109,12 +109,14 @@ object SweepAnalysis {
         val pts = points.filter { it.usable }
         if (pts.map { it.value }.distinct().size < MIN_POINTS)
             return null
-        // Normal equations for [x^2 x 1]; centre x first so large values (grams) do not lose precision.
+        // Normal equations for [u^2 u 1] on u = (x - x0) / scale, so neither large values (grams)
+        // nor tiny steps (N/mm) upset the conditioning; the result is mapped back to x.
         val x0 = pts.sumOf { it.value!! } / pts.size
+        val scale = (pts.maxOf { it.value!! } - pts.minOf { it.value!! }).takeIf { it > 0 } ?: 1.0
         var s0 = 0.0; var s1 = 0.0; var s2 = 0.0; var s3 = 0.0; var s4 = 0.0
         var t0 = 0.0; var t1 = 0.0; var t2 = 0.0
         for (p in pts) {
-            val x = p.value!! - x0
+            val x = (p.value!! - x0) / scale
             val y = p.metric
             s0 += 1; s1 += x; s2 += x * x; s3 += x * x * x; s4 += x * x * x * x
             t0 += y; t1 += x * y; t2 += x * x * y
@@ -122,12 +124,13 @@ object SweepAnalysis {
         val det = det3(s4, s3, s2, s3, s2, s1, s2, s1, s0)
         if (abs(det) < 1e-12)
             return null
-        val a = det3(t2, s3, s2, t1, s2, s1, t0, s1, s0) / det
-        val b = det3(s4, t2, s2, s3, t1, s1, s2, t0, s0) / det
-        val c = det3(s4, s3, t2, s3, s2, t1, s2, s1, t0) / det
-        // Undo the centring: a (x - x0)^2 + b (x - x0) + c.
-        val bb = b - 2 * a * x0
-        val cc = a * x0 * x0 - b * x0 + c
+        val au = det3(t2, s3, s2, t1, s2, s1, t0, s1, s0) / det
+        val bu = det3(s4, t2, s2, s3, t1, s1, s2, t0, s0) / det
+        val cu = det3(s4, s3, t2, s3, s2, t1, s2, s1, t0) / det
+        // Undo the scaling and centring: au u^2 + bu u + cu with u = (x - x0) / scale.
+        val a = au / (scale * scale)
+        val bb = bu / scale - 2 * a * x0
+        val cc = a * x0 * x0 - bu * x0 / scale + cu
         var ss = 0.0
         for (p in pts) {
             val d = p.metric - (a * p.value!! * p.value!! + bb * p.value!! + cc)
@@ -148,7 +151,7 @@ object SweepAnalysis {
                 "Set the ${sweep.parameter.label.lowercase(Locale.US)} on every run, then record at least $MIN_POINTS different values to fit an optimum."
             else
                 "Record at least $MIN_POINTS different values to fit an optimum (${distinct} so far)."
-            return SweepSummary(points, null, null, Double.NaN, note, nextAfterTwo(usable, minimize))
+            return SweepSummary(points, null, null, Double.NaN, note, suggest(sweep, nextAfterTwo(usable, minimize)))
         }
         val fit = fit(points) ?: return SweepSummary(points, null, null, Double.NaN, "The values tried do not determine a curve.")
         val lo = usable.minOf { it.value!! }
@@ -165,7 +168,7 @@ object SweepAnalysis {
                 "The runs differ by %.1f%s between best and worst, less than twice their uncertainty (%.1f%s). Spread the values further apart or repeat runs before reading an optimum.".format(
                     Locale.US, spread, if (minimize) " dB" else "", sigma, if (minimize) " dB" else "",
                 ),
-                if (best.value!! >= hi) hi + step else lo - step,
+                suggest(sweep, if (best.value!! >= hi) hi + step else lo - step),
             )
         }
         val curvatureRight = if (minimize) fit.a > 0 else fit.a < 0
@@ -177,7 +180,7 @@ object SweepAnalysis {
                 "No optimum inside %s-%s: the best run is at %s and the trend continues toward %s values. Extend the sweep that way.".format(
                     Locale.US, unit.format(lo), unit.format(hi), unit.format(best.value), further,
                 ),
-                if (best.value >= hi) hi + step else lo - step,
+                suggest(sweep, if (best.value >= hi) hi + step else lo - step),
             )
         }
         val x = fit.extremum
@@ -186,7 +189,7 @@ object SweepAnalysis {
         if (x < lo - margin || x > hi + margin) {
             val side = if (x < lo) "below" else "above"
             // Head toward it, but no further than one more span: far extrapolations of a parabola are guesses.
-            val next = x.coerceIn(lo - span, hi + span)
+            val next = suggest(sweep, x.coerceIn(lo - span, hi + span))
             return SweepSummary(
                 points, fit, x, halfWidth,
                 "The fitted optimum, %s, lies %s the range tried (%s-%s). Extend the sweep toward it before trusting the number.".format(
@@ -206,6 +209,13 @@ object SweepAnalysis {
                 append(" No run has been made there yet; the curve predicts it from the neighbours. Record one at %s to confirm.".format(Locale.US, unit.format(x)))
         }
         return SweepSummary(points, fit, x, halfWidth, note, if (confirmed) null else x)
+    }
+
+    /** A recommendation the parameter can take: masses and stiffnesses stop at zero. */
+    private fun suggest(sweep: Sweep, value: Double?): Double? {
+        if (value == null)
+            return null
+        return if (sweep.parameterNonNegative) value.coerceAtLeast(0.0) else value
     }
 
     /** With two values, the better one says which way to go; with one or none, nothing does. */

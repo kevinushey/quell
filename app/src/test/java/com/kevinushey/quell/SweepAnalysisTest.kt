@@ -94,6 +94,35 @@ class SweepAnalysisTest {
     }
 
     @Test
+    fun suggestionsNeverGoNegativeForMasses() {
+        // Lighter keeps getting better: the next step down from 10 g would be -10 g.
+        val pts = listOf(point(10.0, -4.0), point(30.0, -2.0), point(50.0, -1.0))
+        val summary = SweepAnalysis.summarize(sweep, pts)
+        assertEquals(0.0, summary.nextValue!!, 0.0)
+        val position = sweep.copy(parameter = SweepParameter.POSITION)
+        val pos = SweepAnalysis.summarize(position, listOf(point(10.0, -4.0), point(30.0, -2.0), point(50.0, -1.0)).map {
+            SweepPoint(it.meta.copy(damperMassGrams = null, sweepValue = it.value), it.value, it.metric, 25.0, it.metric, 0.1, null)
+        })
+        assertEquals(-10.0, pos.nextValue!!, 1e-9)
+    }
+
+    @Test
+    fun tinyStepsStillFit() {
+        // Stiffness steps of 0.001 N/mm: the raw normal equations would be singular to the eye.
+        val pts = listOf(0.010, 0.011, 0.012, 0.013).map { k -> point(k, 1e6 * (k - 0.0115) * (k - 0.0115) - 3) }
+        val fit = SweepAnalysis.fit(pts)
+        assertNotNull(fit)
+        assertEquals(0.0115, fit!!.extremum, 1e-9)
+    }
+
+    @Test
+    fun repeatRunsKeepTheStep() {
+        val s = sweep.advanced(300.0).advanced(350.0).advanced(350.0)
+        assertEquals(50.0, s.step!!, 0.0)
+        assertEquals(400.0, s.suggestedNext!!, 0.0)
+    }
+
+    @Test
     fun twoValuesPointTheWay() {
         val pts = listOf(point(300.0, -2.0), point(350.0, -4.0))
         val summary = SweepAnalysis.summarize(sweep, pts)

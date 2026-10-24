@@ -40,6 +40,17 @@ class ParserTest {
     }
 
     @Test
+    fun constantTimeColumnIsRefused() {
+        val text = "t,x,y,z\n" + (0 until 50).joinToString("\n") { "1.0,$it,2,3" }
+        try {
+            AccelerometerParser.parseCsvText(text)
+            org.junit.Assert.fail("expected ImportException")
+        } catch (e: com.kevinushey.quell.data.ImportException) {
+            assertTrue(e.message!!, e.message!!.contains("time column"))
+        }
+    }
+
+    @Test
     fun parsesDecimalCommaExports() {
         // phyphox "CSV (Semicolon, decimal comma)" and "CSV (Tabulator, decimal comma)".
         val semicolon = "\"Time (s)\";\"Acceleration x (m/s^2)\";\"Acceleration y (m/s^2)\";\"Acceleration z (m/s^2)\"\n" +
