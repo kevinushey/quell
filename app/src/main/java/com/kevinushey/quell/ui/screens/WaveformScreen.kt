@@ -14,6 +14,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import com.kevinushey.quell.dsp.Decimate
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -118,7 +119,9 @@ private suspend fun buildSeries(vm: MainViewModel, visible: List<DatasetMeta>, c
         } else {
             raw
         }
-        out.add(ChartSeries(meta.id, meta.name, seriesColor(meta.colorIndex), time, values, strokeWidthDp = 1.2f))
+        // Retain a bounded min/max envelope per run, not the full arrays, so many long runs cannot exhaust the heap.
+        val d = Decimate.minMax(time, values)
+        out.add(ChartSeries(meta.id, meta.name, seriesColor(meta.colorIndex), d.time, d.values, strokeWidthDp = 1.2f))
     }
     return out
 }

@@ -82,7 +82,7 @@ object AnalysisEngine {
         val px = Welch.psd(r.x, r.sampleRate, segmentSize, window, overlap)
         val py = Welch.psd(r.y, r.sampleRate, segmentSize, window, overlap)
         val pz = Welch.psd(r.z, r.sampleRate, segmentSize, window, overlap)
-        return Spectrum(px.freq, DoubleArray(px.size) { px.power[it] + py.power[it] + pz.power[it] }, px.segments)
+        return Spectrum(px.freq, DoubleArray(px.size) { px.power[it] + py.power[it] + pz.power[it] }, px.segments, px.windowLength)
     }
 
     fun finish(meta: DatasetMeta, raw: Spectrum, sampleRate: Double, s: AnalysisSettings): SpectrumResult {

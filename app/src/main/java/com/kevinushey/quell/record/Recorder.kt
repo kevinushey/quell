@@ -6,6 +6,7 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Build
+import com.kevinushey.quell.data.MemoryBudget
 import com.kevinushey.quell.data.ParsedRun
 import com.kevinushey.quell.data.TimeSeries
 import com.kevinushey.quell.dsp.Resampler
@@ -23,7 +24,7 @@ data class RecorderStatus(
     val latest: FloatArray = FloatArray(3),
     val sensorName: String? = null,
     val sensorAvailable: Boolean = true,
-    /** The capture hit [Recorder.MAX_SAMPLES] and was stopped automatically; it is still waiting to be saved. */
+    /** The capture hit [Recorder.maxSamples] and was stopped automatically; it is still waiting to be saved. */
     val limitReached: Boolean = false,
 )
 
@@ -44,8 +45,11 @@ class Recorder(context: Context) : SensorEventListener {
     private var startNanos = 0L
     private var startedAt: Date? = null
     private var lastStatusPush = 0L
-    /** Median delivery rate over the most recent samples; what the resampler's grid will use. */
-    private var recentRate = 0.0
+    /** Highest median delivery rate seen in any recent window: an upper bound on the full-capture median. */
+    private var peakRate = 0.0
+
+    /** Heap-aware sample limit shared with the parser, so a saved recording is always analyzable untrimmed. */
+    val maxSamples: Int = MemoryBudget.maxSamples()
 
     val minDelayMicros: Int get() = sensor?.minDelay ?: 0
 
@@ -67,7 +71,8 @@ class Recorder(context: Context) : SensorEventListener {
         if (count < 16)
             return null
 
-        val series = TimeSeries(times.copyOf(count), xs.copyOf(count), ys.copyOf(count), zs.copyOf(count))
+        val kept = analyzableCount()
+        val series = TimeSeries(times.copyOf(kept), xs.copyOf(kept), ys.copyOf(kept), zs.copyOf(kept))
         val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
         return ParsedRun(
             series = series,
@@ -92,7 +97,7 @@ class Recorder(context: Context) : SensorEventListener {
         if (startNanos == 0L)
             startNanos = event.timestamp
         val t = (event.timestamp - startNanos) / 1e9
-        if (count >= MAX_SAMPLES || projectedLength(t) > MAX_SAMPLES) {
+        if (count >= maxSamples || projectedLength(t) > maxSamples) {
             // The resampled grid (span times median rate) is what the analysis bounds, not the
             // event count; a timestamp gap makes it longer. Stop here and keep what we have.
             manager.unregisterListener(this)
@@ -115,7 +120,7 @@ class Recorder(context: Context) : SensorEventListener {
             if (count > RATE_WINDOW) {
                 val deltas = DoubleArray(RATE_WINDOW - 1) { times[count - 1 - it] - times[count - 2 - it] }.filter { it > 0 }.sorted()
                 if (deltas.isNotEmpty())
-                    recentRate = 1.0 / deltas[deltas.size / 2]
+                    peakRate = maxOf(peakRate, 1.0 / deltas[deltas.size / 2])
             }
             _status.value = _status.value.copy(
                 elapsedSec = t,
@@ -128,15 +133,32 @@ class Recorder(context: Context) : SensorEventListener {
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
 
-    /** Samples the resampler would need for the capture so far, mirroring Resampler.resampledLength. */
+    /**
+     * Conservative stand-in for Resampler.resampledLength: the full-capture
+     * median rate can never exceed the highest windowed median seen.
+     */
     private fun projectedLength(spanSec: Double): Double {
         val running = if (spanSec > 0.5) (count - 1) / spanSec else 0.0
-        return spanSec * maxOf(recentRate, running) + 1
+        return spanSec * maxOf(peakRate, running) + 1
+    }
+
+    /**
+     * Number of leading samples whose exact resampled length fits the limit.
+     * The projection is conservative, so this normally returns `count`.
+     */
+    private fun analyzableCount(): Int {
+        val time = times.copyOf(count)
+        val fs = Resampler.estimateSampleRate(time)
+        if (fs <= 0 || Resampler.resampledLength(time, fs) <= maxSamples)
+            return count
+        val maxSpan = (maxSamples - 1) / fs
+        var n = count
+        while (n > 0 && time[n - 1] - time[0] > maxSpan)
+            n--
+        return n
     }
 
     companion object {
-        /** Same bound the parser and resampler enforce, so a saved recording is always analyzable untrimmed. */
-        val MAX_SAMPLES = Resampler.MAX_SAMPLES.toInt()
         private const val RATE_WINDOW = 1024
     }
 

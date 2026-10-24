@@ -79,6 +79,12 @@ class ParserTest {
         assertEquals("3,4", lines.readLine())
         assertEquals(null, lines.readLine())
 
+        val cr = AccelerometerParser.LineReader("a,b\r1,2\r3,4".reader())
+        assertEquals("a,b", cr.readLine())
+        assertEquals("1,2", cr.readLine())
+        assertEquals("3,4", cr.readLine())
+        assertEquals(null, cr.readLine())
+
         val peek = AccelerometerParser.LineReader("h\nrow".reader())
         val first = peek.readLine()!!
         peek.pushBack(first)
@@ -92,6 +98,23 @@ class ParserTest {
         } catch (e: ImportException) {
             // expected
         }
+    }
+
+    @Test
+    fun parsesCarriageReturnSeparatedCsv() {
+        val text = "time,x,y,z\r" + (0 until 50).joinToString("\r") { "${it * 0.01},1,2,3" }
+        val run = AccelerometerParser.parseCsvText(text)
+        assertEquals(50, run.size)
+    }
+
+    @Test
+    fun crlfSplitAcrossBuffersIsOneSeparator() {
+        // 65_535 'a's then CRLF: the CR is the last char of the first 64K buffer, the LF starts the next.
+        val text = "a".repeat(65_535) + "\r\n" + "b\n"
+        val lines = AccelerometerParser.LineReader(text.reader(), maxChars = 100_000)
+        assertEquals(65_535, lines.readLine()!!.length)
+        assertEquals("b", lines.readLine())
+        assertEquals(null, lines.readLine())
     }
 
     @Test

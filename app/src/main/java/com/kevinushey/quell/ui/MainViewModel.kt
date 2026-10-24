@@ -66,7 +66,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private data class ResampleKey(val id: String, val trimStart: Double, val trimEnd: Double)
 
     private val resampledCache = ByteBudgetCache<ResampleKey, Resampled>(ByteBudgetCache.defaultBudget()) { it.size.toLong() * 4 * 8 }
-    private val psdCache = LinkedHashMap<PsdKey, Spectrum>()
+    private val psdCache = LinkedHashMap<PsdKey, Pair<Spectrum, Double>>()
     private val cacheMutex = Mutex()
 
     val spectra: StateFlow<SpectraState> = combine(datasets, _analysis) { ds, s -> ds to s }
@@ -74,9 +74,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val visible = ds.filter { it.visible }
             val results = ArrayList<SpectrumResult>(visible.size)
             for (meta in visible) {
-                val r = resampled(meta) ?: continue
-                val raw = cachedPsd(meta, r, s)
-                results.add(AnalysisEngine.finish(meta, raw, r.sampleRate, s))
+                val (raw, fs) = cachedPsd(meta, s) ?: continue
+                results.add(AnalysisEngine.finish(meta, raw, fs, s))
                 yield()
             }
             SpectraState(results, s, computing = false)
@@ -254,10 +253,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return r
     }
 
-    private suspend fun cachedPsd(meta: DatasetMeta, r: Resampled, s: AnalysisSettings): Spectrum {
+    /**
+     * Raw PSD plus sample rate. The PSD cache is consulted before touching the
+     * samples, so display-only changes never reload or resample anything.
+     */
+    private suspend fun cachedPsd(meta: DatasetMeta, s: AnalysisSettings): Pair<Spectrum, Double>? {
         val key = PsdKey(meta.id, s.channel, s.segmentSize, s.window, s.overlap, meta.trimStart, meta.trimEnd)
         cacheMutex.withLock { psdCache[key] }?.let { return it }
-        val psd = AnalysisEngine.rawPsd(r, s.channel, s.segmentSize, s.window, s.overlap)
+        val r = resampled(meta) ?: return null
+        val psd = AnalysisEngine.rawPsd(r, s.channel, s.segmentSize, s.window, s.overlap) to r.sampleRate
         cacheMutex.withLock {
             psdCache[key] = psd
             // Bound memory: drop the oldest entries past a generous limit.

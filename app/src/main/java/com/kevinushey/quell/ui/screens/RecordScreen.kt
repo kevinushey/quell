@@ -127,7 +127,7 @@ fun RecordScreen(vm: MainViewModel, onDone: () -> Unit) {
     // The recorder stops itself at the analysis sample limit; offer to save what it kept.
     LaunchedEffect(status.limitReached) {
         if (status.limitReached && pending == null) {
-            vm.message("Recording stopped at the ${formatCount(Recorder.MAX_SAMPLES)} sample limit")
+            vm.message("Recording stopped at the ${formatCount(recorder.maxSamples)} sample limit")
             pending = recorder.stop()?.copy(kind = kind)
         }
     }

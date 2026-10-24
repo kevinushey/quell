@@ -407,18 +407,21 @@ private fun TrimDialog(vm: MainViewModel, meta: DatasetMeta, onDismiss: () -> Un
     val preview by androidx.compose.runtime.produceState<FloatArray?>(null, meta.id) {
         val s = vm.series(meta.id) ?: return@produceState
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-            // Peak |a - mean| per column, enough to see where the car was moving.
+            // Peak |a - mean| per column, enough to see where the car was moving. Columns are
+            // elapsed-time buckets so they line up with the slider even when the rate varied.
             val m = s.magnitude()
             val mean = m.average()
             val cols = 240
-            FloatArray(cols) { c ->
-                val a = c * m.size / cols
-                val b = ((c + 1) * m.size / cols).coerceAtLeast(a + 1).coerceAtMost(m.size)
-                var peak = 0.0
-                for (i in a until b)
-                    peak = maxOf(peak, Math.abs(m[i] - mean))
-                peak.toFloat()
+            val t0 = s.time.first()
+            val span = (s.time.last() - t0).coerceAtLeast(1e-9)
+            val peaks = FloatArray(cols)
+            for (i in 0 until s.size) {
+                val c = ((s.time[i] - t0) / span * cols).toInt().coerceIn(0, cols - 1)
+                val v = Math.abs(m[i] - mean).toFloat()
+                if (v > peaks[c])
+                    peaks[c] = v
             }
+            peaks
         }
     }
     val lineColor = seriesColor(meta.colorIndex)

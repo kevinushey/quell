@@ -119,6 +119,7 @@ object AccelerometerParser {
         else
             ColumnLayout.positional(columns.size)
 
+        val maxRows = MemoryBudget.maxSamples()
         val time = DoubleList()
         val x = DoubleList()
         val y = DoubleList()
@@ -143,8 +144,8 @@ object AccelerometerParser {
                 val vm = finite(cells[layout.magnitude!!]) ?: return
                 time.add(t); x.add(vm); y.add(0.0); z.add(0.0)
             }
-            if (time.size > MAX_ROWS)
-                throw ImportException("More than $MAX_ROWS samples; split the recording before importing")
+            if (time.size > maxRows)
+                throw ImportException("More than $maxRows samples; split the recording before importing")
         }
 
         if (!hasHeader)
@@ -175,7 +176,7 @@ object AccelerometerParser {
     private fun checkResamplable(s: TimeSeries) {
         val fs = Resampler.estimateSampleRate(s.time)
         val length = Resampler.resampledLength(s.time, fs)
-        if (length > Resampler.MAX_SAMPLES)
+        if (length > MemoryBudget.maxSamples())
             throw ImportException(
                 "Timestamps are inconsistent: %.0f s span at %.1f Hz would need %d samples. Check the time column's units.".format(
                     java.util.Locale.US,
@@ -292,7 +293,6 @@ object AccelerometerParser {
 
     /** Only metadata tables are read whole; sample tables stream through [parseCsvLines]. */
     private const val MAX_META_CHARS = 1 shl 20
-    private val MAX_ROWS = Resampler.MAX_SAMPLES.toInt()
 
     /** Longest line a real CSV export could plausibly contain. */
     const val MAX_LINE_CHARS = 1 shl 16
@@ -307,6 +307,7 @@ object AccelerometerParser {
         private var len = 0
         private var eof = false
         private var pushedBack: String? = null
+        private var skipLf = false
         private val sb = StringBuilder()
 
         /** Hands a line back so the next [readLine] returns it again (used to peek at the header). */
@@ -334,27 +335,38 @@ object AccelerometerParser {
                     len = n
                     if (n == 0)
                         continue
+                    // A CRLF split across buffers: the CR already ended the line.
+                    if (skipLf) {
+                        skipLf = false
+                        if (buf[0] == '\n')
+                            pos = 1
+                        if (pos >= len)
+                            continue
+                    }
                 }
                 var i = pos
-                while (i < len && buf[i] != '\n')
+                while (i < len && buf[i] != '\n' && buf[i] != '\r')
                     i++
                 if (sb.length + (i - pos) > maxChars)
                     throw ImportException("A line exceeds $maxChars characters; this does not look like a CSV export")
                 sb.appendRange(buf, pos, i)
                 consumed = true
                 if (i < len) {
+                    val cr = buf[i] == '\r'
                     pos = i + 1
-                    return finishLine()
+                    if (cr) {
+                        if (pos < len) {
+                            if (buf[pos] == '\n')
+                                pos++
+                        } else {
+                            skipLf = true
+                        }
+                    }
+                    return sb.toString()
                 }
                 pos = len
             }
-            return if (consumed) finishLine() else null
-        }
-
-        private fun finishLine(): String {
-            if (sb.isNotEmpty() && sb[sb.length - 1] == '\r')
-                sb.setLength(sb.length - 1)
-            return sb.toString()
+            return if (consumed) sb.toString() else null
         }
     }
 
@@ -382,7 +394,7 @@ object AccelerometerParser {
 
         fun add(v: Double) {
             if (size == data.size)
-                data = data.copyOf(size * 2)
+                data = data.copyOf(size + size / 2)
             data[size++] = v
         }
 

@@ -1,5 +1,6 @@
 package com.kevinushey.quell
 
+import com.kevinushey.quell.dsp.Decimate
 import com.kevinushey.quell.dsp.Normalization
 import com.kevinushey.quell.dsp.Resampler
 import com.kevinushey.quell.dsp.Spectrogram
@@ -128,6 +129,30 @@ class AnalysisEdgeCaseTest {
         val padded = Welch.effectiveSmoothingBins(15, 8192, WindowType.RECTANGULAR, samples = 256)
         assertTrue("got $padded", padded < 2.0)
         assertEquals(256, Welch.psd(DoubleArray(256) { sin(it * 0.3) }, 400.0, 8192).windowLength)
+    }
+
+    @Test
+    fun decimationKeepsExtremesAndTimeOrder() {
+        val n = 100_000
+        val time = DoubleArray(n) { it * 0.0025 }
+        val values = DoubleArray(n) { sin(it * 0.01) }
+        values[54_321] = 50.0
+        values[12_345] = -50.0
+        val d = Decimate.minMax(time, values, maxPoints = 1000)
+        assertTrue(d.time.size <= 1000)
+        assertEquals(50.0, d.values.max(), 0.0)
+        assertEquals(-50.0, d.values.min(), 0.0)
+        for (i in 1 until d.time.size)
+            assertTrue(d.time[i] >= d.time[i - 1])
+        val small = Decimate.minMax(time.copyOf(10), values.copyOf(10), maxPoints = 1000)
+        assertEquals(10, small.time.size)
+    }
+
+    @Test
+    fun totalChannelKeepsWindowLength() {
+        val r = com.kevinushey.quell.ui.Resampled.from(com.kevinushey.quell.data.TimeSeries(DoubleArray(256) { it / 400.0 }, DoubleArray(256) { sin(it * 0.3) }, DoubleArray(256), DoubleArray(256) { 9.81 }))
+        val total = com.kevinushey.quell.ui.AnalysisEngine.rawPsd(r, com.kevinushey.quell.dsp.Channel.TOTAL, 8192, WindowType.RECTANGULAR, 0.5)
+        assertEquals(256, total.windowLength)
     }
 
     @Test
