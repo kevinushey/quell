@@ -70,6 +70,9 @@ enum class ExperimentKind(val label: String) {
     TAP("Tap test");
 }
 
+/** Size of the series palette (ui.theme.SeriesPalette): a colorIndex is drawn modulo this, so 12 looks like 0. */
+const val SERIES_COLOR_COUNT = 12
+
 @Serializable
 data class DatasetMeta(
     val id: String,

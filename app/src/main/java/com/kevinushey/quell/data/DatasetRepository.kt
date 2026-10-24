@@ -385,9 +385,12 @@ class DatasetRepository(private val context: Context) {
         // Defaults are written out so a future change of default cannot silently re-tag old entries.
         internal val indexJson = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
 
+        /** The least-used palette slot, lowest first; slots, not raw indices, are what tell two curves apart. */
         private fun nextColorIndex(existing: List<DatasetMeta>): Int {
-            val used = existing.map { it.colorIndex }.toSet()
-            return (0 until 64).firstOrNull { it !in used } ?: existing.size
+            val uses = IntArray(SERIES_COLOR_COUNT)
+            for (m in existing)
+                uses[Math.floorMod(m.colorIndex, SERIES_COLOR_COUNT)]++
+            return uses.indices.minBy { uses[it] }
         }
 
         private fun uniqueName(base: String, existing: List<DatasetMeta>): String {
@@ -409,7 +412,9 @@ class DatasetRepository(private val context: Context) {
             val placed = ArrayList<DatasetMeta>(incoming.size)
             for (meta in incoming) {
                 val taken = existing + placed
-                val color = if (taken.any { it.colorIndex == meta.colorIndex }) nextColorIndex(taken) else meta.colorIndex
+                val slot = Math.floorMod(meta.colorIndex, SERIES_COLOR_COUNT)
+                val clash = taken.any { Math.floorMod(it.colorIndex, SERIES_COLOR_COUNT) == slot }
+                val color = if (clash) nextColorIndex(taken) else meta.colorIndex
                 placed.add(meta.copy(name = uniqueName(meta.name, taken), colorIndex = color))
             }
             return placed

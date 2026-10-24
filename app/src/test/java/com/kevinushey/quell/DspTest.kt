@@ -214,16 +214,14 @@ class TuningTest {
     }
 
     @Test
-    fun aShallowNotchWellShortOfOptimumIsOverDamped() {
+    fun aShallowSplitShortOfOptimumIsNeverCalledOverDamped() {
         val df = 0.1
         val n = (60 / df).toInt()
         val f = DoubleArray(n) { it * df }
         fun lor(fc: Double, fi: Double, damp: Double) = 1.0 / ((1 - (fi / fc) * (fi / fc)).let { it * it } + damp)
-        // Baseline zeta 0.02; the damped run is only 3 dB lower, about 8 dB short of the optimum for mu = 0.04.
         val baseline = com.kevinushey.quell.dsp.Spectrum(f, DoubleArray(n) { lor(25.0, f[it], 0.0016) + 1e-3 })
         val basePeak = com.kevinushey.quell.dsp.Modal.dominantPeak(baseline, 15.0, 35.0)!!
-        val damped = com.kevinushey.quell.dsp.Spectrum(f, DoubleArray(n) { 0.5 * baseline.power[it] })
-        // Balanced side peaks over a 4.5 dB notch: deep enough for splitPeak to report, too shallow for an absorber with enough spring.
+        // Balanced side peaks over a 4.5 dB notch: in the 2-DOF model that is roughly 0.6x optimal damping, not too much.
         val side = 0.5 * basePeak.power
         val split = com.kevinushey.quell.dsp.SplitPeak(
             com.kevinushey.quell.dsp.ModalPeak(22.5, side, 1.0),
@@ -231,9 +229,13 @@ class TuningTest {
             25.0,
             side / Math.pow(10.0, 0.45),
         )
-        val d = com.kevinushey.quell.dsp.Tuning.diagnose(basePeak, damped, 15.0, 35.0, split)!!
-        assertEquals(4.5, d.notchDepthDb, 1e-9)
-        assertEquals(com.kevinushey.quell.dsp.DampingVerdict.OVER_DAMPED, d.verdict)
+        // Quieter than baseline but about 8 dB short of the optimum for mu = 0.04, and louder than baseline.
+        for (scale in doubleArrayOf(0.5, 2.0)) {
+            val damped = com.kevinushey.quell.dsp.Spectrum(f, DoubleArray(n) { scale * baseline.power[it] })
+            val d = com.kevinushey.quell.dsp.Tuning.diagnose(basePeak, damped, 15.0, 35.0, split)!!
+            assertEquals(4.5, d.notchDepthDb, 1e-9)
+            assertEquals(com.kevinushey.quell.dsp.DampingVerdict.INCONCLUSIVE, d.verdict)
+        }
     }
 
     @Test

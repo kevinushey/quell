@@ -217,9 +217,9 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
 
     private suspend fun mirror(tree: Uri, csv: Boolean): MirrorOutcome {
         val remote = listChildren(tree)
-        val state = loadState()
         val metas = repo.datasets.value
         val localIds = metas.map { it.id }.toSet()
+        val state = SyncPlan.adoptCsvNames(loadState(), localIds, remote.keys)
 
         // The folder's index carries forward entries this phone does not have, unless they were deleted here.
         // A damaged index or sweep list is set aside once it has been seen damaged twice (so a neighbour's

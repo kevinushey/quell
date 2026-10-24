@@ -52,6 +52,20 @@ class SyncPlan(
             if (previousBadHash == currentBadHash) DamagedFile.SET_ASIDE else DamagedFile.ABORT_AND_REMEMBER
 
         /**
+         * A local run's CSV already in the folder (another phone's copy, or one
+         * this phone lost track of) is taken over by the "-<id8>.csv" suffix
+         * FolderSync.csvName ends every name with, rather than written again
+         * under what may now be a different name: a restore can rename a run.
+         * The content is the same immutable .bin either way.
+         */
+        fun adoptCsvNames(state: SyncState, localIds: Collection<String>, remoteNames: Collection<String>): SyncState {
+            val found = localIds.filter { it !in state.csvNames }.mapNotNull { id ->
+                remoteNames.firstOrNull { it.endsWith("-${id.take(8)}.csv") }?.let { id to it }
+            }
+            return if (found.isEmpty()) state else state.copy(csvNames = state.csvNames + found)
+        }
+
+        /**
          * Up to [maxAttempts] delayed passes after a transient folder failure,
          * stopping at the first that does not ask for another. True when every
          * attempt still asked for one: the caller hands over to Sync now.

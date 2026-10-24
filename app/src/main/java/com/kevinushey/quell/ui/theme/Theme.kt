@@ -60,6 +60,6 @@ val SeriesPalette = listOf(
     Color(0xFFBAB0AC),
     Color(0xFF1B9E77),
     Color(0xFF7570B3),
-)
+).also { check(it.size == com.kevinushey.quell.data.SERIES_COLOR_COUNT) { "The data layer allocates colours by SERIES_COLOR_COUNT" } }
 
 fun seriesColor(index: Int): Color = SeriesPalette[Math.floorMod(index, SeriesPalette.size)]

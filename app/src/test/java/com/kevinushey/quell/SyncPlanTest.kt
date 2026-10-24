@@ -159,6 +159,19 @@ class SyncPlanTest {
     }
 
     @Test
+    fun aRestoredRunsFolderCsvIsAdoptedNotWrittenTwice() {
+        // The run was "Baseline" on the other phone and is "Baseline (2)" here; its CSV is already in the folder.
+        val id = "0123abcd-0000-0000-0000-000000000000"
+        val r = remote("$id.bin", "Baseline-0123abcd.csv", "index.json", "sweeps.json")
+        val state = SyncPlan.adoptCsvNames(SyncState(mirrored = setOf(id)), listOf(id), r.keys)
+        assertEquals(mapOf(id to "Baseline-0123abcd.csv"), state.csvNames)
+        assertTrue(plan(listOf(id), r, state, indexIds = listOf(id), csv = true).csvToWrite.isEmpty())
+        // A name this phone already tracks is left alone.
+        val tracked = SyncState(csvNames = mapOf(id to "Mine-0123abcd.csv"))
+        assertEquals(tracked, SyncPlan.adoptCsvNames(tracked, listOf(id), r.keys))
+    }
+
+    @Test
     fun aTransientFailureGetsEveryRetryThenHandsOverToSyncNow() = kotlinx.coroutines.runBlocking {
         // Every pass still failing: all three run, then the caller is told to stop.
         var attempts = 0

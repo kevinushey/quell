@@ -36,5 +36,7 @@ class IndexMigrationTest {
         val placed = DatasetRepository.placeAdopted(here, listOf(meta("x", "Baseline", 0), meta("y", "Mass 30 g", 1), meta("z", "Taps", 5)))
         assertEquals(listOf("Baseline (2)", "Mass 30 g", "Taps"), placed.map { it.name })
         assertEquals(listOf(2, 3, 5), placed.map { it.colorIndex })
+        // Colour 12 draws as palette slot 0, so it clashes with the local 0 even though the numbers differ.
+        assertEquals(2, DatasetRepository.placeAdopted(here, listOf(meta("w", "Old", 12))).single().colorIndex)
     }
 }
