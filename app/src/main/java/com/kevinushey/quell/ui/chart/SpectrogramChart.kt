@@ -62,10 +62,13 @@ fun SpectrogramChart(
         )
         drawRect(colors.onSurfaceVariant.copy(alpha = 0.6f), topLeft = rect.topLeft, size = Size(rect.width, rect.height), style = Stroke(1f))
 
-        // Time axis.
-        val tMax = data.times.last()
-        for (t in Axis.linearTicks(0.0, tMax, (rect.width / 70.dp.toPx()).toInt().coerceIn(2, 10))) {
-            val px = rect.left + (t.value / tMax * rect.width).toFloat()
+        // Time axis. Each bitmap column is centred on its frame time and spans one
+        // frame spacing, so the axis runs from half a spacing before the first
+        // centre to half a spacing after the last.
+        val tMin = data.times.first() - data.frameSpacing / 2
+        val tMax = data.times.last() + data.frameSpacing / 2
+        for (t in Axis.linearTicks(tMin, tMax, (rect.width / 70.dp.toPx()).toInt().coerceIn(2, 10))) {
+            val px = rect.left + ((t.value - tMin) / (tMax - tMin) * rect.width).toFloat()
             drawLine(colors.onSurfaceVariant.copy(alpha = 0.5f), Offset(px, rect.bottom), Offset(px, rect.bottom + 4.dp.toPx()), 1f)
             val layout = textMeasurer.measure(t.label ?: "", labelStyle)
             drawText(layout, topLeft = Offset(px - layout.size.width / 2, rect.bottom + 5.dp.toPx()))

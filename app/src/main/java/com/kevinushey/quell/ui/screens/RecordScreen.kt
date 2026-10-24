@@ -24,6 +24,9 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -60,7 +63,7 @@ import kotlinx.coroutines.withContext
 import java.util.Locale
 
 @Composable
-fun RecordScreen(vm: MainViewModel, onSaved: () -> Unit) {
+fun RecordScreen(vm: MainViewModel, onDone: () -> Unit) {
     val context = LocalContext.current
     val recorder = remember { Recorder(context.applicationContext) }
     val status by recorder.status.collectAsStateWithLifecycle()
@@ -69,11 +72,46 @@ fun RecordScreen(vm: MainViewModel, onSaved: () -> Unit) {
     var kind by rememberSaveable { mutableStateOf(ExperimentKind.GENERAL) }
     val tapMode = kind == ExperimentKind.TAP
     var liveTaps by remember { mutableStateOf<TapSummary?>(null) }
+    var leaveRequested by remember { mutableStateOf(false) }
     val settings by vm.analysis.collectAsStateWithLifecycle()
     val liveColor = MaterialTheme.colorScheme.primary
+    val scope = rememberCoroutineScope()
 
+    // Last resort only (activity torn down); normal navigation is intercepted below.
     DisposableEffect(Unit) {
         onDispose { if (recorder.status.value.recording) recorder.stop() }
+    }
+
+    // Leaving mid-recording would silently discard it; ask first.
+    BackHandler(enabled = status.recording) { leaveRequested = true }
+    if (leaveRequested) {
+        AlertDialog(
+            onDismissRequest = { leaveRequested = false },
+            title = { Text("Recording in progress") },
+            text = { Text("Stop the recording before leaving? You can save it or discard it.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    leaveRequested = false
+                    val run = recorder.stop()
+                    if (run == null) {
+                        vm.message("Recording too short to keep")
+                        onDone()
+                    } else {
+                        pending = run.copy(kind = kind)
+                    }
+                }) { Text("Stop and save") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        leaveRequested = false
+                        recorder.stop()
+                        onDone()
+                    }) { Text("Discard") }
+                    TextButton(onClick = { leaveRequested = false }) { Text("Keep recording") }
+                }
+            },
+        )
     }
 
     // Keep the screen awake and the sensor stream alive while recording.
@@ -212,8 +250,10 @@ fun RecordScreen(vm: MainViewModel, onSaved: () -> Unit) {
 
     pending?.let { run ->
         var name by remember { mutableStateOf((if (tapMode) "Tap " else "") + recorder.suggestedName()) }
+        var saving by remember { mutableStateOf(false) }
         AlertDialog(
-            onDismissRequest = { pending = null },
+            // The capture only exists here, so leaving requires an explicit choice.
+            onDismissRequest = {},
             title = { Text("Save recording") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -222,13 +262,20 @@ fun RecordScreen(vm: MainViewModel, onSaved: () -> Unit) {
                 }
             },
             confirmButton = {
-                TextButton(onClick = {
-                    vm.addRecording(name.ifBlank { recorder.suggestedName() }, run)
-                    pending = null
-                    onSaved()
-                }) { Text("Save") }
+                TextButton(enabled = !saving, onClick = {
+                    scope.launch {
+                        saving = true
+                        val ok = vm.addRecording(name.ifBlank { recorder.suggestedName() }, run)
+                        saving = false
+                        // On failure the dialog stays up with the recording intact, for a retry.
+                        if (ok) {
+                            pending = null
+                            onDone()
+                        }
+                    }
+                }) { Text(if (saving) "Saving..." else "Save") }
             },
-            dismissButton = { TextButton(onClick = { pending = null }) { Text("Discard") } },
+            dismissButton = { TextButton(enabled = !saving, onClick = { pending = null }) { Text("Discard") } },
         )
     }
 }

@@ -39,6 +39,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -120,6 +121,7 @@ fun AppNav(vm: MainViewModel, pendingImports: StateFlow<List<Uri>>, onImportsCon
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
     val exportHost = remember { ChartExportHost() }
 
     val busy by vm.busy.collectAsStateWithLifecycle()
@@ -149,7 +151,8 @@ fun AppNav(vm: MainViewModel, pendingImports: StateFlow<List<Uri>>, onImportsCon
                 title = { Text(current.longTitle, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
                     if (!current.inBottomBar) {
-                        IconButton(onClick = { navController.popBackStack() }) {
+                        // Through the dispatcher so screens with a BackHandler (Record) can intercept.
+                        IconButton(onClick = { backDispatcher?.onBackPressed() ?: navController.popBackStack() }) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                         }
                     }
@@ -239,7 +242,7 @@ fun AppNav(vm: MainViewModel, pendingImports: StateFlow<List<Uri>>, onImportsCon
                 composable(Screen.DAMPER.route) { DamperScreen(vm, exportHost) }
                 composable(Screen.SIGNAL.route) { SignalScreen(vm, exportHost) }
                 composable(Screen.DATASETS.route) { DatasetsScreen(vm, onImport = import, onRecord = { navController.navigate(Screen.RECORD.route) }) }
-                composable(Screen.RECORD.route) { RecordScreen(vm, onSaved = { navController.popBackStack() }) }
+                composable(Screen.RECORD.route) { RecordScreen(vm, onDone = { navController.popBackStack() }) }
                 composable(Screen.SETTINGS.route) { SettingsScreen(vm) }
             }
             if (busy)

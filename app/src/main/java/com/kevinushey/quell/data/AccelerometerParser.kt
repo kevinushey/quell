@@ -1,5 +1,6 @@
 package com.kevinushey.quell.data
 
+import com.kevinushey.quell.dsp.Resampler
 import java.io.BufferedInputStream
 import java.io.BufferedReader
 import java.io.InputStream
@@ -121,18 +122,19 @@ object AccelerometerParser {
             val cells = splitLine(line, delimiter)
             if (cells.size <= layout.maxIndex)
                 return
-            val t = cells[layout.time].toDoubleOrNull() ?: return
-            val vx = layout.x?.let { cells[it].toDoubleOrNull() }
-            val vy = layout.y?.let { cells[it].toDoubleOrNull() }
-            val vz = layout.z?.let { cells[it].toDoubleOrNull() }
-            val vm = layout.magnitude?.let { cells[it].toDoubleOrNull() }
+            val t = finite(cells[layout.time]) ?: return
+            val vx = layout.x?.let { finite(cells[it]) }
+            val vy = layout.y?.let { finite(cells[it]) }
+            val vz = layout.z?.let { finite(cells[it]) }
+            val vm = layout.magnitude?.let { finite(cells[it]) }
             when {
                 vx != null && vy != null && vz != null -> {
                     time.add(t); x.add(vx); y.add(vy); z.add(vz)
                 }
                 vm != null -> {
-                    // Magnitude-only files: store it on every axis so each channel still shows something.
-                    time.add(t); x.add(vm); y.add(vm); z.add(vm)
+                    // Magnitude-only files: keep it on one axis so |a| and the summed
+                    // Total power still equal the supplied values.
+                    time.add(t); x.add(vm); y.add(0.0); z.add(0.0)
                 }
             }
         }
@@ -149,8 +151,31 @@ object AccelerometerParser {
         if (time.size < 16)
             throw ImportException("Too few samples (${time.size}); is this an accelerometer export?")
 
-        val series = TimeSeries(time.toArray(), x.toArray(), y.toArray(), z.toArray())
-        return ensureMonotonic(series)
+        val series = ensureMonotonic(TimeSeries(time.toArray(), x.toArray(), y.toArray(), z.toArray()))
+        checkResamplable(series)
+        return series
+    }
+
+    /** NaN and Infinity parse as doubles but poison every FFT downstream. */
+    private fun finite(cell: String): Double? = cell.toDoubleOrNull()?.takeIf { it.isFinite() }
+
+    /**
+     * A single wild timestamp (epoch seconds among relative ones, or the wrong
+     * unit) makes the uniform grid impossibly large. Refuse it here, before the
+     * dataset is persisted and re-analyzed on every launch.
+     */
+    private fun checkResamplable(s: TimeSeries) {
+        val fs = Resampler.estimateSampleRate(s.time)
+        val length = Resampler.resampledLength(s.time, fs)
+        if (length > Resampler.MAX_SAMPLES)
+            throw ImportException(
+                "Timestamps are inconsistent: %.0f s span at %.1f Hz would need %d samples. Check the time column's units.".format(
+                    java.util.Locale.US,
+                    s.time.last() - s.time.first(),
+                    fs,
+                    length,
+                )
+            )
     }
 
     /** Timestamps are expected sorted; if not, sort them so interpolation works. */

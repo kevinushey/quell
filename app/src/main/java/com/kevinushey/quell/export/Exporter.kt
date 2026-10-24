@@ -52,7 +52,9 @@ object Exporter {
                     w.write(grid[i].toString())
                     for (col in aligned) {
                         w.write(",")
-                        w.write(col[i].toString())
+                        // Past a run's Nyquist there is no value; leave the cell empty.
+                        if (!col[i].isNaN())
+                            w.write(col[i].toString())
                     }
                     w.write("\n")
                 }

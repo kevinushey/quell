@@ -527,6 +527,9 @@ private fun DrawScope.drawCrosshair(
     for (s in series) {
         if (s.x.isEmpty())
             continue
+        // Outside a series' recorded range there is nothing to read out.
+        if (xLin < s.x.first() || xLin > s.x.last())
+            continue
         val idx = nearestIndex(s.x, xLin)
         val yv = s.y[idx]
         if (yv.isNaN())

@@ -16,8 +16,14 @@ enum class Normalization(val label: String, val description: String) {
     /** Normalizations that keep levels comparable between runs; offered on the quick chip. */
     val recommendedForDampers: Boolean get() = this == NONE || this == REFERENCE_BAND || this == TOTAL_POWER || this == MEDIAN
 
-    /** Scale factor for REFERENCE_BAND, computed on the full-range spectrum so the band need not be on screen. */
+    /**
+     * Scale factor for REFERENCE_BAND, computed on the full-range spectrum so
+     * the band need not be on screen. NaN when the recording does not cover
+     * the band, so callers can flag the run instead of silently comparing it.
+     */
     fun referenceFactor(full: Spectrum, lo: Double, hi: Double): Double {
+        if (!full.covers(lo, hi))
+            return Double.NaN
         val mean = full.meanPower(lo, hi)
         return if (mean.isNaN() || mean <= 0) 1.0 else 1.0 / mean
     }

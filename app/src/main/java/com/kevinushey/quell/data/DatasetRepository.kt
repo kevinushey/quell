@@ -3,9 +3,12 @@ package com.kevinushey.quell.data
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.AtomicFile
 import com.kevinushey.quell.dsp.Resampler
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -33,18 +36,41 @@ class DatasetRepository(private val context: Context) {
     private val indexFile = File(dir, "index.json")
     private val mutex = Mutex()
     private val cache = HashMap<String, TimeSeries>()
+    private var loaded = false
 
     private val _datasets = MutableStateFlow<List<DatasetMeta>>(emptyList())
     val datasets: StateFlow<List<DatasetMeta>> = _datasets
 
+    /** Problems that lost or endangered data, for the UI to surface. */
+    private val _problems = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val problems: SharedFlow<String> = _problems
+
     suspend fun load() = withContext(Dispatchers.IO) {
-        mutex.withLock {
-            if (indexFile.exists()) {
-                _datasets.value = runCatching { json.decodeFromString<List<DatasetMeta>>(migrateIndex(indexFile.readText())) }
-                    .getOrDefault(emptyList())
-                    .filter { File(dir, "${it.id}.bin").exists() }
-            }
+        mutex.withLock { loadLocked() }
+    }
+
+    /**
+     * Reads the index once. A corrupt index is set aside under a new name
+     * instead of being silently replaced, so nothing is lost for good.
+     */
+    private fun loadLocked() {
+        if (loaded)
+            return
+        loaded = true
+        val atomic = AtomicFile(indexFile)
+        if (!indexFile.exists() && !File(dir, "index.json.bak").exists())
+            return
+
+        val text = runCatching { String(atomic.readFully(), Charsets.UTF_8) }.getOrNull()
+        val decoded = text?.let { runCatching { json.decodeFromString<List<DatasetMeta>>(migrateIndex(it)) }.getOrNull() }
+        if (decoded == null) {
+            val kept = File(dir, "index.broken-${System.currentTimeMillis()}.json")
+            if (indexFile.exists())
+                indexFile.renameTo(kept)
+            _problems.tryEmit("The dataset index could not be read. A copy was kept as ${kept.name}; the datasets are still on disk.")
+            return
         }
+        _datasets.value = decoded.filter { File(dir, "${it.id}.bin").exists() }
     }
 
     suspend fun importUri(uri: Uri): DatasetMeta = withContext(Dispatchers.IO) {
@@ -61,6 +87,7 @@ class DatasetRepository(private val context: Context) {
         writeSeries(File(dir, "$id.bin"), series)
 
         mutex.withLock {
+            loadLocked()
             val meta = DatasetMeta(
                 id = id,
                 name = uniqueName(name),
@@ -96,6 +123,7 @@ class DatasetRepository(private val context: Context) {
 
     suspend fun update(meta: DatasetMeta) = withContext(Dispatchers.IO) {
         mutex.withLock {
+            loadLocked()
             _datasets.value = _datasets.value.map { if (it.id == meta.id) meta else it }
             persistIndex()
         }
@@ -103,6 +131,7 @@ class DatasetRepository(private val context: Context) {
 
     suspend fun updateAll(transform: (DatasetMeta) -> DatasetMeta) = withContext(Dispatchers.IO) {
         mutex.withLock {
+            loadLocked()
             _datasets.value = _datasets.value.map(transform)
             persistIndex()
         }
@@ -110,6 +139,7 @@ class DatasetRepository(private val context: Context) {
 
     suspend fun move(id: String, delta: Int) = withContext(Dispatchers.IO) {
         mutex.withLock {
+            loadLocked()
             val list = _datasets.value.toMutableList()
             val from = list.indexOfFirst { it.id == id }
             val to = from + delta
@@ -123,6 +153,7 @@ class DatasetRepository(private val context: Context) {
 
     suspend fun delete(id: String) = withContext(Dispatchers.IO) {
         mutex.withLock {
+            loadLocked()
             File(dir, "$id.bin").delete()
             cache.remove(id)
             _datasets.value = _datasets.value.filterNot { it.id == id }
@@ -130,8 +161,17 @@ class DatasetRepository(private val context: Context) {
         }
     }
 
+    /** Write-to-temp-then-rename, so a crash mid-write leaves the previous index intact. */
     private fun persistIndex() {
-        indexFile.writeText(json.encodeToString(_datasets.value))
+        val atomic = AtomicFile(indexFile)
+        val out = atomic.startWrite()
+        try {
+            out.write(json.encodeToString(_datasets.value).toByteArray(Charsets.UTF_8))
+            atomic.finishWrite(out)
+        } catch (e: Exception) {
+            atomic.failWrite(out)
+            throw e
+        }
     }
 
     private fun nextColorIndex(): Int {

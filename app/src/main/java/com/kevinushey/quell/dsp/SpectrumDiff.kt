@@ -29,14 +29,18 @@ object SpectrumDiff {
         topCount: Int = 5,
         minSeparationBins: Int = 5,
     ): DiffResult {
-        val grid = reference.freq
+        // Only the frequencies both spectra actually measured take part; a lower
+        // sample rate must not be compared against the other run past its Nyquist.
+        val shared = reference.freq.indices.filter { other.supports(reference.freq[it]) }
+        val grid = DoubleArray(shared.size) { reference.freq[shared[it]] }
         val aligned = other.onGrid(grid)
         val n = grid.size
 
         val a = DoubleArray(n)
         val b = DoubleArray(n)
         for (i in 0 until n) {
-            a[i] = if (decibelDomain) reference.power[i] else Normalization.toDb(reference.power[i])
+            val rp = reference.power[shared[i]]
+            a[i] = if (decibelDomain) rp else Normalization.toDb(rp)
             b[i] = if (decibelDomain) aligned.power[i] else Normalization.toDb(aligned.power[i])
         }
 

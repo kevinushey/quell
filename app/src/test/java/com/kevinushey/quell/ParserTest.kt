@@ -5,6 +5,7 @@ import com.kevinushey.quell.data.DatasetRepository
 import com.kevinushey.quell.data.ImportException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 import java.io.ByteArrayOutputStream
@@ -44,6 +45,30 @@ class ParserTest {
         val run = AccelerometerParser.parseCsvText(text)
         assertEquals(50, run.size)
         assertEquals(9.8, run.x[0], 1e-9)
+        // Only one axis carries the value, so |a| and summed power match the file.
+        assertEquals(0.0, run.y[0], 0.0)
+        assertEquals(9.8, run.magnitude()[0], 1e-9)
+    }
+
+    @Test
+    fun skipsRowsWithNonFiniteValues() {
+        val rows = (0 until 50).map { "${it * 0.01},1,2,3" }.toMutableList()
+        rows[10] = "0.10,NaN,2,3"
+        rows[11] = "0.11,1,Infinity,3"
+        val run = AccelerometerParser.parseCsvText("time,x,y,z\n" + rows.joinToString("\n"))
+        assertEquals(48, run.size)
+        assertTrue(run.x.all { it.isFinite() } && run.y.all { it.isFinite() })
+    }
+
+    @Test
+    fun rejectsInconsistentTimestamps() {
+        val rows = (0 until 50).map { "${it * 0.01},1,2,3" } + "1700000000.0,1,2,3"
+        try {
+            AccelerometerParser.parseCsvText("time,x,y,z\n" + rows.joinToString("\n"))
+            fail("expected ImportException")
+        } catch (e: ImportException) {
+            assertTrue(e.message!!.contains("Timestamps"))
+        }
     }
 
     @Test

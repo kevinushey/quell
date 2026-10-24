@@ -104,14 +104,32 @@ fun SpectrumScreen(vm: MainViewModel, exportHost: ChartExportHost, onImport: () 
                         append(" dB  |  ${settings.window.label} ${(settings.overlap * 100).toInt()}%")
                     }
                 }
-                Text(
-                    info,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 4.dp, top = 2.dp),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Column {
+                    Text(
+                        info,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    val uncovered = results.filter { it.referenceBandMissing }
+                    if (uncovered.isNotEmpty()) {
+                        Text(
+                            "Reference band %.0f-%.0f Hz not covered by: %s (shown unnormalized)".format(
+                                Locale.US,
+                                settings.refBandLow,
+                                settings.refBandHigh,
+                                uncovered.joinToString { it.meta.name },
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(start = 4.dp),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
             },
         ) {
             if (series.isEmpty()) {

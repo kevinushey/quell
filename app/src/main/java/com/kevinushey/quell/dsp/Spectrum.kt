@@ -35,8 +35,18 @@ class Spectrum(val freq: DoubleArray, val power: DoubleArray, val segments: Int 
         return power[lo] + frac * (power[hi] - power[lo])
     }
 
-    /** Resample this spectrum onto another spectrum's frequency grid. */
-    fun onGrid(grid: DoubleArray): Spectrum = Spectrum(grid, DoubleArray(grid.size) { interpolate(grid[it]) }, segments)
+    /**
+     * Resample this spectrum onto another frequency grid. Frequencies outside
+     * this spectrum's support (e.g. past its Nyquist) become NaN rather than a
+     * repeated endpoint, so comparisons cannot fabricate differences there.
+     */
+    fun onGrid(grid: DoubleArray): Spectrum =
+        Spectrum(grid, DoubleArray(grid.size) { if (supports(grid[it])) interpolate(grid[it]) else Double.NaN }, segments)
+
+    fun supports(f: Double): Boolean = size > 0 && f >= freq[0] && f <= freq[size - 1]
+
+    /** True when the whole band [lo, hi] lies inside this spectrum's frequency range. */
+    fun covers(lo: Double, hi: Double): Boolean = size > 0 && lo >= freq[0] - binWidth / 2 && hi <= freq[size - 1] + binWidth / 2
 
     fun restrictTo(minFreq: Double, maxFreq: Double): Spectrum {
         val idx = freq.indices.filter { freq[it] in minFreq..maxFreq }
@@ -56,13 +66,35 @@ class Spectrum(val freq: DoubleArray, val power: DoubleArray, val segments: Int 
         return if (n > 0) sum / n else Double.NaN
     }
 
-    /** RMS of the underlying signal within [lo, hi]: sqrt of the integrated PSD. */
+    /** RMS of the underlying signal within [lo, hi]: sqrt of the integrated PSD; NaN if the band is not covered. */
     fun bandRms(lo: Double, hi: Double): Double {
+        if (!covers(lo, hi))
+            return Double.NaN
         var sum = 0.0
         for (i in 0 until size)
             if (freq[i] in lo..hi)
                 sum += power[i]
         return Math.sqrt(sum * binWidth)
+    }
+
+    companion object {
+        /**
+         * Mean number of bins actually combined by `smoothed(bins)` on a
+         * spectrum of `size` bins, accounting for the clipped windows at both
+         * ends and for ranges narrower than the window.
+         */
+        fun effectiveSmoothingBins(size: Int, bins: Int): Int {
+            if (bins <= 1 || size <= 0)
+                return 1
+            val half = bins / 2
+            var total = 0L
+            for (i in 0 until size) {
+                val a = (i - half).coerceAtLeast(0)
+                val b = (i + half).coerceAtMost(size - 1)
+                total += b - a + 1
+            }
+            return (total / size).toInt().coerceAtLeast(1)
+        }
     }
 
     fun smoothed(bins: Int): Spectrum {

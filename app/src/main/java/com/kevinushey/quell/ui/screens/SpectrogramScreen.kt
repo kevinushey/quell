@@ -15,6 +15,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import com.kevinushey.quell.dsp.Channel
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -67,7 +68,10 @@ fun SpectrogramScreen(vm: MainViewModel, exportHost: ChartExportHost) {
         value = withContext(Dispatchers.Default) {
             // Shorter segments than the PSD view: time resolution matters more here.
             val seg = (settings.segmentSize / 2).coerceAtLeast(256)
-            Spectrogram.compute(r.channel(settings.channel), r.sampleRate, seg, settings.window)
+            if (settings.channel == Channel.TOTAL)
+                Spectrogram.computeTotal(r.x, r.y, r.z, r.sampleRate, seg, settings.window)
+            else
+                Spectrogram.compute(r.channel(settings.channel), r.sampleRate, seg, settings.window)
         }
     }
 

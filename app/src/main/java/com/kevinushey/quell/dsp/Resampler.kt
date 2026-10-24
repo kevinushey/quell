@@ -1,13 +1,22 @@
 package com.kevinushey.quell.dsp
 
-import kotlin.math.roundToInt
-
 /**
  * Phone sensor timestamps jitter and occasionally repeat, and an FFT needs a
  * uniform grid. We estimate the nominal rate from the median spacing and
  * linearly interpolate onto it.
  */
 object Resampler {
+
+    /** Upper bound on one resampled channel; beyond this the timestamps are almost certainly wrong. */
+    const val MAX_SAMPLES = 8_000_000L
+
+    /** Number of samples a uniform grid at `sampleRate` needs to span `time`, without overflow. */
+    fun resampledLength(time: DoubleArray, sampleRate: Double): Long {
+        if (time.isEmpty() || sampleRate <= 0.0)
+            return 0L
+        val n = Math.rint((time.last() - time.first()) * sampleRate) + 1.0
+        return if (n.isNaN() || n < 0) Long.MAX_VALUE else minOf(n, Long.MAX_VALUE.toDouble()).toLong()
+    }
 
     fun estimateSampleRate(time: DoubleArray): Double {
         if (time.size < 2)
@@ -28,9 +37,18 @@ object Resampler {
         if (time.isEmpty() || sampleRate <= 0.0)
             return DoubleArray(0)
 
+        val length = resampledLength(time, sampleRate)
+        require(length <= MAX_SAMPLES) {
+            "Timestamps span %.0f s at %.0f Hz, which needs %d samples; check the time column units".format(
+                java.util.Locale.US,
+                time.last() - time.first(),
+                sampleRate,
+                length,
+            )
+        }
+
         val t0 = time.first()
-        val duration = time.last() - t0
-        val n = (duration * sampleRate).roundToInt() + 1
+        val n = length.toInt()
         val out = DoubleArray(n)
         val dt = 1.0 / sampleRate
 

@@ -48,8 +48,10 @@ class SpectrumResult(
     val sampleRate: Double,
     /** Scale applied by reference-band normalization (1.0 otherwise); lets the Damper tab honour it. */
     val referenceScale: Double,
+    /** Set when reference-band normalization was requested but this run does not cover the band. */
+    val referenceBandMissing: Boolean = false,
 ) {
-    /** Welch segments times smoothing bins: what the random error depends on. */
+    /** Welch segments times the bins actually combined by smoothing: what the random error depends on. */
     val effectiveAverages: Int get() = raw.segments * maxOf(1, smoothingBinsApplied)
     var smoothingBinsApplied: Int = 1
         internal set
@@ -83,10 +85,13 @@ object AnalysisEngine {
     fun finish(meta: DatasetMeta, raw: Spectrum, sampleRate: Double, s: AnalysisSettings): SpectrumResult {
         val maxF = if (s.maxFreq > 0) minOf(s.maxFreq, raw.maxFreq) else raw.maxFreq
         val restricted = raw.restrictTo(s.minFreq, maxF).smoothed(s.smoothingBins)
-        val refScale = if (s.normalization == Normalization.REFERENCE_BAND)
+        val refFactor = if (s.normalization == Normalization.REFERENCE_BAND)
             s.normalization.referenceFactor(raw, s.refBandLow, s.refBandHigh)
         else
             1.0
+        // An uncovered band cannot be normalized; keep the run visible but flag it.
+        val refMissing = refFactor.isNaN()
+        val refScale = if (refMissing) 1.0 else refFactor
         val normalized = if (s.normalization == Normalization.REFERENCE_BAND)
             restricted.map { _, p -> p * refScale }
         else
@@ -102,7 +107,8 @@ object AnalysisEngine {
         val span = (normalized.freq.lastOrNull() ?: 0.0) - (normalized.freq.firstOrNull() ?: 0.0)
         val separation = if (normalized.binWidth > 0) Math.ceil(0.02 * span / normalized.binWidth).toInt().coerceAtLeast(4) else 4
         val peaks = if (s.showPeaks) Peaks.find(normalized.freq, display, s.peakCount, minSeparationBins = separation) else emptyList()
-        return SpectrumResult(meta, raw, normalized, display, peaks, sampleRate, refScale).also { it.smoothingBinsApplied = s.smoothingBins }
+        return SpectrumResult(meta, raw, normalized, display, peaks, sampleRate, refScale, refMissing)
+            .also { it.smoothingBinsApplied = Spectrum.effectiveSmoothingBins(restricted.size, s.smoothingBins) }
     }
 
     fun yAxisLabel(s: AnalysisSettings): String = when {

@@ -98,7 +98,9 @@ fun DamperScreen(vm: MainViewModel, exportHost: ChartExportHost) {
     val rows = remember(driveResults, lo, hi) {
         driveResults.map { r ->
             val s = if (r.referenceScale != 1.0) r.raw.map { _, p -> p * r.referenceScale } else r.raw
-            DriveRow(r, s, s.bandRms(lo, hi), Modal.dominantPeak(s, lo, hi), Modal.splitPeak(s, lo, hi))
+            // NaN marks a run whose sample rate does not reach the band; it is shown but not compared.
+            val rms = if (r.referenceBandMissing) Double.NaN else s.bandRms(lo, hi)
+            DriveRow(r, s, rms, Modal.dominantPeak(s, lo, hi), Modal.splitPeak(s, lo, hi))
         }
     }
     val driveRef = rows.firstOrNull { it.result.meta.id == settings.referenceId } ?: rows.firstOrNull()
@@ -213,7 +215,7 @@ fun DamperScreen(vm: MainViewModel, exportHost: ChartExportHost) {
                         }
                     }
                 }
-                val withMass = rows.filter { it.result.meta.damperMassGrams != null }.sortedBy { it.result.meta.damperMassGrams }
+                val withMass = rows.filter { it.result.meta.damperMassGrams != null && !it.bandRms.isNaN() }.sortedBy { it.result.meta.damperMassGrams }
                 if (withMass.size >= 2) {
                     item { SectionTitle("Band RMS vs damper mass") }
                     item {
@@ -336,8 +338,9 @@ private fun HeaderRow(labels: List<String>) {
 @Composable
 private fun DriveTableRow(r: DriveRow, ref: DriveRow?, settings: AnalysisSettings) {
     val isRef = ref != null && r.result.meta.id == ref.result.meta.id
-    val delta = if (ref == null || isRef || ref.bandRms <= 0) null else (r.bandRms / ref.bandRms - 1) * 100
-    val deltaDb = if (ref == null || isRef || ref.bandRms <= 0 || r.bandRms <= 0) null else 20 * Math.log10(r.bandRms / ref.bandRms)
+    val comparable = ref != null && !isRef && ref.bandRms > 0 && !r.bandRms.isNaN()
+    val delta = if (comparable) (r.bandRms / ref!!.bandRms - 1) * 100 else null
+    val deltaDb = if (comparable && r.bandRms > 0) 20 * Math.log10(r.bandRms / ref!!.bandRms) else null
     Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(
             (if (isRef) "* " else "") + r.result.meta.name,
@@ -348,11 +351,16 @@ private fun DriveTableRow(r: DriveRow, ref: DriveRow?, settings: AnalysisSetting
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(COLUMN_WEIGHTS[0]),
         )
-        Text("%.4f".format(Locale.US, r.bandRms), style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(COLUMN_WEIGHTS[1]))
+        Text(
+            if (r.bandRms.isNaN()) "n/a" else "%.4f".format(Locale.US, r.bandRms),
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.weight(COLUMN_WEIGHTS[1]),
+        )
         Text(
             when {
                 isRef -> "ref"
                 delta == null -> "--"
+                deltaDb == null -> "%+.0f%%".format(Locale.US, delta)
                 else -> "%+.0f%%\n%+.1f dB".format(Locale.US, delta, deltaDb)
             },
             style = MaterialTheme.typography.bodySmall,

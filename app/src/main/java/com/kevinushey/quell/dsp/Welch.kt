@@ -22,12 +22,15 @@ object Welch {
             return Spectrum(freq, acc)
 
         val w = window.coefficients(n)
-        val windowPower = w.sumOf { it * it }
         val step = (n * (1.0 - overlap)).toInt().coerceAtLeast(1)
 
-        // Short recordings still get one zero-padded segment rather than nothing.
-        val padded = if (signal.size < n) signal.copyOf(n) else signal
-        val segments = (padded.size - n) / step + 1
+        // A short recording gets one segment: its real samples are detrended and
+        // windowed first, then zero padded, so the gravity offset does not become a step.
+        val count = minOf(signal.size, n)
+        val segments = if (signal.size < n) 1 else (signal.size - n) / step + 1
+        var windowPower = 0.0
+        for (i in 0 until count)
+            windowPower += w[i] * w[i]
 
         val re = DoubleArray(n)
         val im = DoubleArray(n)
@@ -35,12 +38,12 @@ object Welch {
             val start = s * step
             var mean = 0.0
             if (detrend) {
-                for (i in 0 until n)
-                    mean += padded[start + i]
-                mean /= n
+                for (i in 0 until count)
+                    mean += signal[start + i]
+                mean /= count
             }
             for (i in 0 until n) {
-                re[i] = (padded[start + i] - mean) * w[i]
+                re[i] = if (i < count) (signal[start + i] - mean) * w[i] else 0.0
                 im[i] = 0.0
             }
 

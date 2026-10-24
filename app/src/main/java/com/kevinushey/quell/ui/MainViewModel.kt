@@ -89,6 +89,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             repo.load()
             _ready.value = true
         }
+        viewModelScope.launch { repo.problems.collect { _messages.emit(it) } }
     }
 
     fun updateAnalysis(transform: (AnalysisSettings) -> AnalysisSettings) {
@@ -135,17 +136,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun addRecording(name: String, run: ParsedRun) {
-        viewModelScope.launch {
-            _busy.value++
-            try {
-                repo.add(name, "Recorded on device", run)
-                _messages.tryEmit("Saved recording \"$name\"")
-            } catch (e: Exception) {
-                _messages.tryEmit("Could not save recording: ${e.message}")
-            } finally {
-                _busy.value--
-            }
+    /** Persists a recording; false means it was not saved and the caller must keep it. */
+    suspend fun addRecording(name: String, run: ParsedRun): Boolean {
+        _busy.value++
+        return try {
+            repo.add(name, "Recorded on device", run)
+            _messages.tryEmit("Saved recording \"$name\"")
+            true
+        } catch (e: Exception) {
+            _messages.tryEmit("Could not save recording: ${e.message}")
+            false
+        } finally {
+            _busy.value--
         }
     }
 
@@ -199,7 +201,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val key = TapKey(meta.id, meta.trimStart, meta.trimEnd, threshold)
         cacheMutex.withLock { tapCache[key] }?.let { return it }
         val s = repo.series(meta.id) ?: return null
-        val summary = withContext(Dispatchers.Default) { TapAnalysis.analyze(s.slice(meta.trimStart, meta.effectiveTrimEnd), threshold) }
+        val summary = analyzeOrReport(meta) { TapAnalysis.analyze(s.slice(meta.trimStart, meta.effectiveTrimEnd), threshold) } ?: return null
         cacheMutex.withLock {
             tapCache.keys.removeAll { it.id == meta.id && it != key }
             tapCache[key] = summary
@@ -207,12 +209,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return summary
     }
 
+    /**
+     * One bad dataset (say, with impossible timestamps) must not take the whole
+     * spectra flow down; report it and let the others render.
+     */
+    private suspend fun <T> analyzeOrReport(meta: DatasetMeta, block: () -> T): T? =
+        withContext(Dispatchers.Default) {
+            try {
+                block()
+            } catch (e: Exception) {
+                _messages.tryEmit("Could not analyze \"${meta.name}\": ${e.message ?: e.javaClass.simpleName}")
+                null
+            }
+        }
+
     /** Uniformly resampled samples inside the dataset's trim window. */
     suspend fun resampled(meta: DatasetMeta): Resampled? {
         val key = ResampleKey(meta.id, meta.trimStart, meta.trimEnd)
         cacheMutex.withLock { resampledCache[key] }?.let { return it }
         val s = repo.series(meta.id) ?: return null
-        val r = withContext(Dispatchers.Default) { Resampled.from(s.slice(meta.trimStart, meta.effectiveTrimEnd)) }
+        val r = analyzeOrReport(meta) { Resampled.from(s.slice(meta.trimStart, meta.effectiveTrimEnd)) } ?: return null
         cacheMutex.withLock {
             resampledCache.keys.removeAll { it.id == meta.id && it != key }
             resampledCache[key] = r
