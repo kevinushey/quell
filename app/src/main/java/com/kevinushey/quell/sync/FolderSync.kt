@@ -18,9 +18,12 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -67,7 +70,8 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
     private val stateFile = File(context.filesDir, "sync-state.json")
     private val mutex = Mutex()
     private var scope: CoroutineScope? = null
-    private var retryScheduled = false
+    private var retry: Job? = null
+    private var retryAttempts = 0
 
     private val _status = MutableStateFlow(SyncStatus())
     val status: StateFlow<SyncStatus> = _status
@@ -88,6 +92,9 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             combine(repo.datasets, repo.sweeps, syncSettings) { _, _, s -> s }
                 .debounce(3_000)
                 .collect { (treeUri, enabled, csv) ->
+                    // A pending retry belongs to the settings it was scheduled under.
+                    retry?.cancel()
+                    retryAttempts = 0
                     val tree = treeUri?.takeIf { enabled } ?: run {
                         _status.value = SyncStatus()
                         return@collect
@@ -98,7 +105,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        _status.value = _status.value.copy(syncing = false, lastError = e.message ?: e.javaClass.simpleName)
+                        _status.update { it.copy(syncing = false, lastError = e.message ?: e.javaClass.simpleName) }
                     }
                 }
         }
@@ -115,7 +122,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         val s = scope ?: return
         if (_status.value.restoring)
             return
-        _status.value = _status.value.copy(restoring = true)
+        _status.update { it.copy(restoring = true) }
         s.launch {
             val message = try {
                 val result = restore(tree)
@@ -126,6 +133,8 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                 }
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: RetryLater) {
+                "Could not restore from the folder yet: ${e.message?.substringBefore(';') ?: "it is not ready"}. Try again in a few seconds."
             } catch (e: Exception) {
                 "Could not restore from the folder: ${e.message ?: e.javaClass.simpleName}"
             }
@@ -136,47 +145,58 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
     /** One mirror pass. */
     suspend fun syncNow(tree: Uri, csv: Boolean) = withContext(Dispatchers.IO) {
         mutex.withLock {
-            _status.value = _status.value.copy(syncing = true)
+            _status.update { it.copy(syncing = true) }
             try {
                 // The name lookup touches the grant too; a revoked folder must land in lastError like anything else.
-                _status.value = _status.value.copy(folderName = folderName(tree))
+                _status.update { it.copy(folderName = folderName(tree)) }
                 val outcome = mirror(tree, csv)
-                _status.value = _status.value.copy(
-                    lastSyncEpochMs = System.currentTimeMillis(),
-                    mirroredCount = outcome.mirrored,
-                    lastError = null,
-                    notOnThisPhone = outcome.notOnThisPhone,
-                    indexDegraded = repo.degraded.value,
-                    deletedElsewhere = outcome.deletedElsewhere,
-                )
+                retryAttempts = 0
+                _status.update {
+                    it.copy(
+                        lastSyncEpochMs = System.currentTimeMillis(),
+                        mirroredCount = outcome.mirrored,
+                        lastError = null,
+                        notOnThisPhone = outcome.notOnThisPhone,
+                        indexDegraded = repo.degraded.value,
+                        deletedElsewhere = outcome.deletedElsewhere,
+                    )
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: RetryLater) {
-                _status.value = _status.value.copy(lastError = e.message)
-                scheduleRetry(tree, csv)
+                _status.update { it.copy(lastError = e.message) }
+                scheduleRetry(tree)
             } catch (e: Exception) {
-                _status.value = _status.value.copy(lastError = e.message ?: e.javaClass.simpleName)
+                _status.update { it.copy(lastError = e.message ?: e.javaClass.simpleName) }
             } finally {
-                _status.value = _status.value.copy(syncing = false)
+                _status.update { it.copy(syncing = false) }
             }
         }
     }
 
-    /** A transient folder failure (listing still loading, content not yet downloaded) gets one more pass soon. */
+    /** A transient folder failure (listing still loading, content not yet downloaded) gets another pass soon. */
     private class RetryLater(message: String) : IllegalStateException(message)
 
-    private fun scheduleRetry(tree: Uri, csv: Boolean) {
+    /**
+     * A few delayed passes, each checked against the settings as they are
+     * when it fires: a folder the user has since left or stopped mirroring
+     * is never written to by a stale retry.
+     */
+    private fun scheduleRetry(tree: Uri) {
         val s = scope ?: return
-        if (retryScheduled)
+        if (retry?.isActive == true)
             return
-        retryScheduled = true
-        s.launch {
-            try {
-                delay(RETRY_DELAY_MS)
-            } finally {
-                retryScheduled = false
-            }
-            syncNow(tree, csv)
+        if (retryAttempts >= MAX_RETRIES) {
+            _status.update { it.copy(lastError = (it.lastError ?: "The folder could not be read") + " Use Sync now to try again.") }
+            return
+        }
+        retryAttempts++
+        retry = s.launch {
+            delay(RETRY_DELAY_MS)
+            val app = settings.app.first()
+            if (!app.syncEnabled || app.syncTreeUri != tree.toString())
+                return@launch
+            syncNow(tree, app.syncCsv)
         }
     }
 
@@ -270,8 +290,11 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         mirrored.removeAll(released)
         for (id in released)
             csvNames.remove(id)
-        // Deleted datasets with nothing left in the folder need no more remembering either.
-        val settled = deleted.filter { id -> id in released || ("$id.bin" !in remote && state.csvNames[id]?.let { it in remote } != true) }
+        // A local tombstone is forgotten only once the folder's own list carries it (read back on this pass, so a
+        // neighbour's whole-file write cannot have dropped it unseen) and its files are gone.
+        val settled = repo.deletedIds.value.filter { id ->
+            id in remoteTombstones && (id in released || ("$id.bin" !in remote && state.csvNames[id]?.let { it in remote } != true))
+        }
         if (plan.writeIndex && indexWriteSafe)
             writeDocument(tree, remote, "index.json", "application/json") { it.write(indexBytes) }
         if (plan.writeSweeps && indexWriteSafe)
@@ -376,6 +399,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         /** The UUIDs this app generates; anything else in a folder's index is not ours to place in the sandbox. */
         val ID_SHAPE = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
         const val RETRY_DELAY_MS = 15_000L
+        const val MAX_RETRIES = 3
     }
 
     /**
@@ -387,11 +411,11 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
      */
     suspend fun restore(tree: Uri): RestoreResult = withContext(Dispatchers.IO) {
         // Busy from the moment it is asked for, including the wait for a running mirror pass.
-        _status.value = _status.value.copy(restoring = true)
+        _status.update { it.copy(restoring = true) }
         try {
             mutex.withLock { restoreLocked(tree) }
         } finally {
-            _status.value = _status.value.copy(restoring = false)
+            _status.update { it.copy(restoring = false) }
         }
     }
 

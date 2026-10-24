@@ -166,6 +166,11 @@ class SyncPlanTest {
         val p = plan(listOf("a", "b"), r, state, indexIds = listOf("a"), deleted = setOf("b"))
         assertTrue(p.binsToWrite.isEmpty())
         assertTrue(p.deletions.isEmpty())
+        // ...and it leaves the folder's index, so both phones write the same file.
+        fun meta(id: String) = com.kevinushey.quell.data.DatasetMeta(id, id, "$id.csv", 0, 10, 400.0, 1.0, 0)
+        val merged = SyncPlan.mergeIndex(listOf(meta("a"), meta("b")), listOf(meta("a")), setOf("b"))
+        assertEquals(listOf("a"), merged.map { it.id })
+        assertTrue(SyncPlan.indexWriteIsSafe(merged.map { it.id }, listOf("a"), setOf("b")))
     }
 
     @Test

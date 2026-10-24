@@ -59,12 +59,13 @@ class SyncPlan(
          */
         fun mergeIndex(local: List<DatasetMeta>, remote: List<DatasetMeta>, deletedIds: Set<String>): List<DatasetMeta> {
             val localIds = local.map { it.id }.toSet()
-            return local + remote.filter { it.id !in localIds && it.id !in deletedIds }
+            // A local run tombstoned on another phone stays here but leaves the folder's index, so both phones write the same file.
+            return local.filter { it.id !in deletedIds } + remote.filter { it.id !in localIds && it.id !in deletedIds }
         }
 
         fun mergeSweeps(local: List<Sweep>, remote: List<Sweep>, deletedIds: Set<String>): List<Sweep> {
             val localIds = local.map { it.id }.toSet()
-            return local + remote.filter { it.id !in localIds && it.id !in deletedIds }
+            return local.filter { it.id !in deletedIds } + remote.filter { it.id !in localIds && it.id !in deletedIds }
         }
 
         /**
