@@ -1,5 +1,6 @@
 package com.kevinushey.quell.data
 
+import java.io.BufferedInputStream
 import java.io.BufferedReader
 import java.io.InputStream
 import java.io.InputStreamReader
@@ -12,11 +13,21 @@ import java.util.zip.ZipInputStream
 object AccelerometerParser {
 
     fun parse(input: InputStream, fileName: String): ParsedRun {
-        val lower = fileName.lowercase()
-        return if (lower.endsWith(".zip"))
-            parseZip(input)
+        // Content URIs often lack an extension, so decide by content when we can peek.
+        val buffered = input as? BufferedInputStream ?: BufferedInputStream(input)
+        return if (isZip(buffered) || fileName.lowercase().endsWith(".zip"))
+            parseZip(buffered)
         else
-            parseCsv(input)
+            parseCsv(buffered)
+    }
+
+    private fun isZip(input: BufferedInputStream): Boolean {
+        val magic = ByteArray(4)
+        input.mark(magic.size)
+        val n = input.read(magic)
+        input.reset()
+        return n == 4 && magic[0] == 'P'.code.toByte() && magic[1] == 'K'.code.toByte() &&
+            magic[2] == 3.toByte() && magic[3] == 4.toByte()
     }
 
     fun parseZip(input: InputStream): ParsedRun {
@@ -88,14 +99,15 @@ object AccelerometerParser {
             val trimmed = line.trim()
             if (trimmed.isEmpty() || trimmed.startsWith("#"))
                 continue
-            headerLine = trimmed
+            headerLine = trimmed.removePrefix("\uFEFF")
             break
         }
         val header = headerLine ?: throw ImportException("File is empty")
         val delimiter = detectDelimiter(header)
         val columns = splitLine(header, delimiter).map { it.trim().trim('"').lowercase() }
 
-        val hasHeader = columns.any { it.any(Char::isLetter) }
+        // Letters alone are not enough: a header-less first row may use scientific notation (1.0E-3).
+        val hasHeader = columns.any { it.toDoubleOrNull() == null }
         val layout = if (hasHeader)
             ColumnLayout.fromHeader(columns)
         else
@@ -105,8 +117,6 @@ object AccelerometerParser {
         val x = DoubleList()
         val y = DoubleList()
         val z = DoubleList()
-        var lineNo = 0
-
         fun consume(line: String) {
             val cells = splitLine(line, delimiter)
             if (cells.size <= layout.maxIndex)
@@ -131,7 +141,6 @@ object AccelerometerParser {
             consume(header)
         while (true) {
             val line = reader.readLine() ?: break
-            lineNo++
             if (line.isBlank())
                 continue
             consume(line)

@@ -78,6 +78,33 @@ class ParserTest {
     }
 
     @Test
+    fun detectsZipByContentWithoutExtension() {
+        val bytes = ByteArrayOutputStream()
+        ZipOutputStream(bytes).use { zip ->
+            zip.putNextEntry(ZipEntry("Raw Data.csv"))
+            zip.write(phyphoxCsv(100).toByteArray())
+            zip.closeEntry()
+        }
+        val run = AccelerometerParser.parse(bytes.toByteArray().inputStream(), "123")
+        assertEquals(100, run.series.size)
+    }
+
+    @Test
+    fun stripsUtf8Bom() {
+        val text = "\uFEFFtime,x,y,z\n" + (0 until 50).joinToString("\n") { "${it * 0.01},1,2,3" }
+        val run = AccelerometerParser.parseCsvText(text)
+        assertEquals(50, run.size)
+    }
+
+    @Test
+    fun headerlessScientificNotationIsData() {
+        val text = (0 until 50).joinToString("\n") { "${"%.3E".format(it * 0.01)},1,2,3" }
+        val run = AccelerometerParser.parseCsvText(text)
+        assertEquals(50, run.size)
+        assertEquals(0.0, run.time[0], 1e-9)
+    }
+
+    @Test
     fun defaultNameStripsPhyphoxPrefix() {
         assertEquals("2026-10-20 14-14-14 Baseline", DatasetRepository.defaultName("Acceleration with g 2026-10-20 14-14-14 Baseline.zip"))
         assertEquals("run1", DatasetRepository.defaultName("run1.csv"))

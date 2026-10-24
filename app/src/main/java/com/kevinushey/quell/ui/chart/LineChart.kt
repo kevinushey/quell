@@ -319,10 +319,14 @@ private fun computeBounds(series: List<ChartSeries>, xScale: AxisScale): Viewpor
             if (yv.isNaN() || yv.isInfinite())
                 continue
             val xd = toDomain(xv, xScale)
-            if (xd < xMin) xMin = xd
-            if (xd > xMax) xMax = xd
-            if (yv < yMin) yMin = yv
-            if (yv > yMax) yMax = yv
+            if (xd < xMin)
+                xMin = xd
+            if (xd > xMax)
+                xMax = xd
+            if (yv < yMin)
+                yMin = yv
+            if (yv > yMax)
+                yMax = yv
         }
     }
     if (xMin.isInfinite() || yMin.isInfinite())
@@ -459,10 +463,13 @@ private fun DrawScope.drawSeries(s: ChartSeries, rect: Rect, vp: Viewport, xScal
                     break
                 val yv = s.y[i]
                 if (!yv.isNaN()) {
-                    if (first.isNaN()) first = yv
+                    if (first.isNaN())
+                        first = yv
                     last = yv
-                    if (yv < lo) lo = yv
-                    if (yv > hi) hi = yv
+                    if (yv < lo)
+                        lo = yv
+                    if (yv > hi)
+                        hi = yv
                 }
                 i++
             }

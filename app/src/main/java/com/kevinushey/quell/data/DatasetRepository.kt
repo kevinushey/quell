@@ -81,34 +81,41 @@ class DatasetRepository(private val context: Context) {
     }
 
     suspend fun series(id: String): TimeSeries? = withContext(Dispatchers.IO) {
-        cache[id] ?: run {
-            val file = File(dir, "$id.bin")
-            if (!file.exists())
-                null
-            else
-                readSeries(file).also { cache[id] = it }
+        mutex.withLock { cache[id] }?.let { return@withContext it }
+
+        val file = File(dir, "$id.bin")
+        if (!file.exists())
+            return@withContext null
+        val series = readSeries(file)
+
+        mutex.withLock { cache.getOrPut(id) { series } }
+    }
+
+    suspend fun update(meta: DatasetMeta) = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            _datasets.value = _datasets.value.map { if (it.id == meta.id) meta else it }
+            persistIndex()
         }
     }
 
-    suspend fun update(meta: DatasetMeta) = mutex.withLock {
-        _datasets.value = _datasets.value.map { if (it.id == meta.id) meta else it }
-        persistIndex()
+    suspend fun updateAll(transform: (DatasetMeta) -> DatasetMeta) = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            _datasets.value = _datasets.value.map(transform)
+            persistIndex()
+        }
     }
 
-    suspend fun updateAll(transform: (DatasetMeta) -> DatasetMeta) = mutex.withLock {
-        _datasets.value = _datasets.value.map(transform)
-        persistIndex()
-    }
-
-    suspend fun move(id: String, delta: Int) = mutex.withLock {
-        val list = _datasets.value.toMutableList()
-        val from = list.indexOfFirst { it.id == id }
-        val to = from + delta
-        if (from < 0 || to < 0 || to >= list.size)
-            return@withLock
-        list.add(to, list.removeAt(from))
-        _datasets.value = list
-        persistIndex()
+    suspend fun move(id: String, delta: Int) = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val list = _datasets.value.toMutableList()
+            val from = list.indexOfFirst { it.id == id }
+            val to = from + delta
+            if (from < 0 || to < 0 || to >= list.size)
+                return@withLock
+            list.add(to, list.removeAt(from))
+            _datasets.value = list
+            persistIndex()
+        }
     }
 
     suspend fun delete(id: String) = withContext(Dispatchers.IO) {

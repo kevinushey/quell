@@ -38,6 +38,7 @@ import com.kevinushey.quell.data.WheelMarkers
 import com.kevinushey.quell.dsp.Normalization
 import com.kevinushey.quell.dsp.WindowType
 import java.util.Locale
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -74,7 +75,7 @@ fun AnalysisOptionsSheet(
             SectionLabel("Overlap: ${(settings.overlap * 100).toInt()}%")
             Slider(
                 value = settings.overlap.toFloat(),
-                onValueChange = { v -> onChange { it.copy(overlap = (v * 20).toInt() / 20.0) } },
+                onValueChange = { v -> onChange { it.copy(overlap = (v * 20).roundToInt() / 20.0) } },
                 valueRange = 0f..0.9f,
                 steps = 17,
             )
@@ -196,7 +197,8 @@ private fun NumberField(label: String, value: Double, modifier: Modifier = Modif
         value = text,
         onValueChange = { t ->
             text = t
-            t.toDoubleOrNull()?.let(onCommit)
+            // Infinity/NaN would make the settings unserializable.
+            t.toDoubleOrNull()?.takeIf { it.isFinite() }?.let(onCommit)
         },
         label = { Text(label) },
         singleLine = true,

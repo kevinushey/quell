@@ -5,9 +5,8 @@ import java.util.Locale
 fun formatDuration(sec: Double): String {
     if (sec < 60)
         return String.format(Locale.US, "%.1f s", sec)
-    val m = (sec / 60).toInt()
-    val s = sec - m * 60
-    return String.format(Locale.US, "%dm %02.0fs", m, s)
+    val total = Math.round(sec)
+    return String.format(Locale.US, "%dm %02ds", total / 60, total % 60)
 }
 
 fun formatHz(hz: Double): String = when {

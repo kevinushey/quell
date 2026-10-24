@@ -51,14 +51,13 @@ object TapAnalysis {
         val fs = Resampler.estimateSampleRate(series.time)
         if (fs <= 0 || series.size < 64)
             return TapSummary(emptyList(), fs)
-        val x = Resampler.resample(series.time, series.x, fs)
-        val y = Resampler.resample(series.time, series.y, fs)
-        val z = Resampler.resample(series.time, series.z, fs)
-        val signal = RingDown.dominantAxis(x, y, z)
+        val r = Resampled.from(series)
+        val signal = RingDown.dominantAxis(r.x, r.y, r.z)
 
         val results = ArrayList<RingDownResult>()
         var from = 0
-        val window = (windowSeconds * fs).toInt()
+        // A bogus sample rate (e.g. nanosecond timestamps) can round the window to 0; always advance.
+        val window = (windowSeconds * fs).toInt().coerceAtLeast(1)
         while (from < signal.size - 64) {
             val rel = RingDown.detectImpulse(signal.copyOfRange(from, signal.size), threshold)
             if (rel < 0)

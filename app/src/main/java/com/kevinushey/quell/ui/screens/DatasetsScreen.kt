@@ -365,7 +365,7 @@ private fun MassDialog(meta: DatasetMeta, onDismiss: () -> Unit, onConfirm: (Dou
                 )
             }
         },
-        confirmButton = { TextButton(onClick = { onConfirm(text.trim().toDoubleOrNull()) }) { Text("Save") } },
+        confirmButton = { TextButton(onClick = { onConfirm(text.trim().toDoubleOrNull()?.takeIf { it.isFinite() }) }) { Text("Save") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }

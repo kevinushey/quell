@@ -63,8 +63,10 @@ object Spectrogram {
                 val db = Normalization.toDb(p)
                 row[k] = db
                 if (k > 0) {
-                    if (db < minDb) minDb = db
-                    if (db > maxDb) maxDb = db
+                    if (db < minDb)
+                        minDb = db
+                    if (db > maxDb)
+                        maxDb = db
                 }
             }
         }

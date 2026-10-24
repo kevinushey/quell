@@ -44,8 +44,9 @@ import com.kevinushey.quell.ui.TapSummary
 import androidx.compose.runtime.saveable.rememberSaveable
 import com.kevinushey.quell.dsp.Channel
 import com.kevinushey.quell.dsp.Normalization
-import com.kevinushey.quell.dsp.Welch
+import com.kevinushey.quell.dsp.WindowType
 import com.kevinushey.quell.record.Recorder
+import com.kevinushey.quell.ui.AnalysisEngine
 import com.kevinushey.quell.ui.MainViewModel
 import com.kevinushey.quell.ui.Resampled
 import com.kevinushey.quell.ui.chart.ChartSeries
@@ -102,12 +103,10 @@ fun RecordScreen(vm: MainViewModel, onSaved: () -> Unit) {
                 if (r.size < 256)
                     return@withContext null
                 val seg = minOf(1024, Integer.highestOneBit(r.size))
-                val px = Welch.psd(r.x, r.sampleRate, seg)
-                val py = Welch.psd(r.y, r.sampleRate, seg)
-                val pz = Welch.psd(r.z, r.sampleRate, seg)
-                val total = DoubleArray(px.size) { Normalization.toDb(px.power[it] + py.power[it] + pz.power[it]) }
+                val psd = AnalysisEngine.rawPsd(r, Channel.TOTAL, seg, WindowType.HANN, 0.5)
+                val total = DoubleArray(psd.size) { Normalization.toDb(psd.power[it]) }
                 val from = 1
-                ChartSeries("live", "Last 4 s", liveColor, px.freq.copyOfRange(from, px.size), total.copyOfRange(from, px.size))
+                ChartSeries("live", "Last 4 s", liveColor, psd.freq.copyOfRange(from, psd.size), total.copyOfRange(from, psd.size))
             }
         }
     }
