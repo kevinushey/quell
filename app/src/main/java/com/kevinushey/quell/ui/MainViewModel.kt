@@ -102,7 +102,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             repo.load()
             _ready.value = true
         }
-        viewModelScope.launch { repo.problems.collect { _messages.emit(it) } }
+        viewModelScope.launch {
+            repo.problems.collect {
+                _messages.emit(it)
+                repo.problemsShown()
+            }
+        }
     }
 
     /**
@@ -319,6 +324,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** A new mirror folder (persisted permission already taken by the caller), or null to stop mirroring. */
     fun setSyncFolder(tree: Uri?) {
+        // The old folder's persisted grant is no longer wanted; the provider may already be gone.
+        val previous = _appSettings.value.syncTreeUri
+        if (previous != null && previous != tree?.toString()) {
+            runCatching {
+                getApplication<Application>().contentResolver.releasePersistableUriPermission(
+                    Uri.parse(previous),
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+            }
+        }
         updateAppSettings { it.copy(syncTreeUri = tree?.toString(), syncEnabled = tree != null) }
         if (tree != null)
             syncNow()
@@ -336,8 +351,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         launchReporting("restore from the folder") {
             _busy.value++
             try {
-                val n = sync.restore(Uri.parse(tree))
-                _messages.tryEmit(if (n == 0) "Nothing new in the folder" else "Restored $n dataset${if (n == 1) "" else "s"}")
+                val result = sync.restore(Uri.parse(tree))
+                val n = result.restored
+                _messages.tryEmit(
+                    buildString {
+                        append(if (n == 0) "Nothing new in the folder" else "Restored $n dataset${if (n == 1) "" else "s"}")
+                        if (result.skipped.isNotEmpty())
+                            append("; ${result.skipped.size} could not be read: ${result.skipped.joinToString()}")
+                    }
+                )
             } finally {
                 _busy.value--
             }

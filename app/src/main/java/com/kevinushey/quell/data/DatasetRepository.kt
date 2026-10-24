@@ -50,6 +50,10 @@ class DatasetRepository(private val context: Context) {
     private val _problems = MutableSharedFlow<String>(replay = 4, extraBufferCapacity = 4)
     val problems: SharedFlow<String> = _problems
 
+    /** Called by the consumer once replayed problems have been shown, so a recreated screen does not show them again. */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun problemsShown() = _problems.resetReplayCache()
+
     suspend fun load() = withContext(Dispatchers.IO) {
         mutex.withLock { loadLocked() }
     }
