@@ -90,7 +90,7 @@ fun DamperScreen(vm: MainViewModel, exportHost: ChartExportHost) {
         EmptyState(
             icon = Icons.Default.Tune,
             title = "No visible runs",
-            message = "Enable drive runs or tap-test recordings on the Data tab. Mark a dataset as a tap test from its menu.",
+            message = "Enable drive runs or tap-test recordings on the Data tab. Set a dataset's experiment type from its menu.",
         )
         return
     }

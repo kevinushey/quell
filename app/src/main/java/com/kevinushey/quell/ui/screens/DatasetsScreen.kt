@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
@@ -78,6 +79,7 @@ private sealed interface Dialog {
     data class Mass(val meta: DatasetMeta) : Dialog
     data class Trim(val meta: DatasetMeta) : Dialog
     data class Taps(val meta: DatasetMeta) : Dialog
+    data class Kind(val meta: DatasetMeta) : Dialog
 }
 
 @Composable
@@ -127,7 +129,7 @@ fun DatasetsScreen(vm: MainViewModel, onImport: () -> Unit, onRecord: () -> Unit
                             when (action) {
                                 RowAction.RENAME -> dialog = Dialog.Rename(meta)
                                 RowAction.NOTES -> dialog = Dialog.Notes(meta)
-                                RowAction.KIND -> vm.setKind(meta.id, if (meta.kind == ExperimentKind.TAP) ExperimentKind.DRIVE else ExperimentKind.TAP)
+                                RowAction.KIND -> dialog = Dialog.Kind(meta)
                                 RowAction.MASS -> dialog = Dialog.Mass(meta)
                                 RowAction.TRIM -> dialog = Dialog.Trim(meta)
                                 RowAction.TAPS -> dialog = Dialog.Taps(meta)
@@ -178,6 +180,10 @@ fun DatasetsScreen(vm: MainViewModel, onImport: () -> Unit, onRecord: () -> Unit
             dialog = null
         }
         is Dialog.Taps -> TapResultsDialog(vm, d.meta, settings.tapThreshold) { dialog = null }
+        is Dialog.Kind -> KindDialog(d.meta.kind, onDismiss = { dialog = null }) {
+            vm.setKind(d.meta.id, it)
+            dialog = null
+        }
         is Dialog.Delete -> AlertDialog(
             onDismissRequest = { dialog = null },
             title = { Text("Delete \"${d.meta.name}\"?") },
@@ -196,7 +202,7 @@ fun DatasetsScreen(vm: MainViewModel, onImport: () -> Unit, onRecord: () -> Unit
 private enum class RowAction(val label: String) {
     RENAME("Rename"),
     NOTES("Edit notes"),
-    KIND("Toggle drive / tap test"),
+    KIND("Set experiment type"),
     MASS("Set damper mass"),
     TRIM("Trim time range"),
     TAPS("Analyze taps (ring-down)"),
@@ -239,7 +245,8 @@ private fun DatasetRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 val tags = buildList {
-                    add(meta.kind.label)
+                    if (meta.kind != ExperimentKind.GENERAL)
+                        add(meta.kind.label)
                     meta.damperMassGrams?.let { add("%.1f g".format(java.util.Locale.US, it)) }
                     if (meta.isTrimmed)
                         add("trimmed %.1f-%.1f s".format(java.util.Locale.US, meta.trimStart, meta.effectiveTrimEnd))
@@ -306,6 +313,28 @@ private fun ColorDialog(current: Int, onDismiss: () -> Unit, onPick: (Int) -> Un
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
+}
+
+@Composable
+private fun KindDialog(current: ExperimentKind, onDismiss: () -> Unit, onPick: (ExperimentKind) -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Experiment type") },
+        text = {
+            Column {
+                for (k in ExperimentKind.entries) {
+                    Row(
+                        Modifier.fillMaxWidth().clickable { onPick(k) }.padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = k == current, onClick = { onPick(k) })
+                        Text(k.label)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 

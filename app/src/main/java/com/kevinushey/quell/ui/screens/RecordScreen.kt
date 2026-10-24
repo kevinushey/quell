@@ -20,9 +20,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -68,7 +66,8 @@ fun RecordScreen(vm: MainViewModel, onSaved: () -> Unit) {
     val status by recorder.status.collectAsStateWithLifecycle()
     var pending by remember { mutableStateOf<ParsedRun?>(null) }
     var liveSpectrum by remember { mutableStateOf<ChartSeries?>(null) }
-    var tapMode by rememberSaveable { mutableStateOf(false) }
+    var kind by rememberSaveable { mutableStateOf(ExperimentKind.GENERAL) }
+    val tapMode = kind == ExperimentKind.TAP
     var liveTaps by remember { mutableStateOf<TapSummary?>(null) }
     val settings by vm.analysis.collectAsStateWithLifecycle()
     val liveColor = MaterialTheme.colorScheme.primary
@@ -117,17 +116,15 @@ fun RecordScreen(vm: MainViewModel, onSaved: () -> Unit) {
     }
 
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-            SegmentedButton(
-                selected = !tapMode,
-                onClick = { if (!status.recording) tapMode = false },
-                shape = SegmentedButtonDefaults.itemShape(0, 2),
-            ) { Text("Drive") }
-            SegmentedButton(
-                selected = tapMode,
-                onClick = { if (!status.recording) tapMode = true },
-                shape = SegmentedButtonDefaults.itemShape(1, 2),
-            ) { Text("Tap test") }
+        // Both chips off is a plain recording; tapping the active chip returns to that.
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (k in listOf(ExperimentKind.DRIVE, ExperimentKind.TAP)) {
+                FilterChip(
+                    selected = kind == k,
+                    onClick = { if (!status.recording) kind = if (kind == k) ExperimentKind.GENERAL else k },
+                    label = { Text(k.label) },
+                )
+            }
         }
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -200,7 +197,7 @@ fun RecordScreen(vm: MainViewModel, onSaved: () -> Unit) {
                     if (run == null)
                         vm.message("Recording too short to keep")
                     else
-                        pending = if (tapMode) run.copy(kind = ExperimentKind.TAP) else run
+                        pending = run.copy(kind = kind)
                 } else if (!recorder.start()) {
                     vm.message("Could not start the accelerometer")
                 }

@@ -12,6 +12,9 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import java.io.BufferedInputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -25,7 +28,7 @@ import java.util.UUID
  */
 class DatasetRepository(private val context: Context) {
 
-    private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
+    private val json = indexJson
     private val dir: File = File(context.filesDir, "datasets").apply { mkdirs() }
     private val indexFile = File(dir, "index.json")
     private val mutex = Mutex()
@@ -37,7 +40,7 @@ class DatasetRepository(private val context: Context) {
     suspend fun load() = withContext(Dispatchers.IO) {
         mutex.withLock {
             if (indexFile.exists()) {
-                _datasets.value = runCatching { json.decodeFromString<List<DatasetMeta>>(indexFile.readText()) }
+                _datasets.value = runCatching { json.decodeFromString<List<DatasetMeta>>(migrateIndex(indexFile.readText())) }
                     .getOrDefault(emptyList())
                     .filter { File(dir, "${it.id}.bin").exists() }
             }
@@ -158,6 +161,26 @@ class DatasetRepository(private val context: Context) {
     }
 
     companion object {
+        // Defaults are written out so a future change of default cannot silently re-tag old entries.
+        internal val indexJson = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
+
+        /**
+         * Early indexes omitted default fields, and the default kind was DRIVE
+         * at the time. Those entries must stay drive runs now that GENERAL is
+         * the default.
+         */
+        internal fun migrateIndex(text: String): String {
+            val root = indexJson.parseToJsonElement(text) as? JsonArray ?: return text
+            val migrated = JsonArray(root.map { el ->
+                val obj = el as? JsonObject ?: return@map el
+                if ("kind" in obj)
+                    obj
+                else
+                    JsonObject(obj + ("kind" to JsonPrimitive(ExperimentKind.DRIVE.name)))
+            })
+            return indexJson.encodeToString(JsonArray.serializer(), migrated)
+        }
+
         private val PHYPHOX_PREFIXES = listOf(
             "Acceleration with g ",
             "Acceleration (without g) ",

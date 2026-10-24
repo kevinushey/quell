@@ -38,7 +38,7 @@ record directly from the phone's own accelerometer.
 - Tap-test recording mode: strike the structure, each ring-down is fitted for
   natural frequency and damping ratio on the spot; beating between two decay
   frequencies is flagged as a coupled absorber.
-- Per-dataset analysis window (trim), experiment type (drive or tap) and
+- Per-dataset analysis window (trim), experiment type (general, drive or tap) and
   damper mass.
 - Reference-band normalization to correct for differing road input between
   runs; the footer reports averages and the resulting dB uncertainty.

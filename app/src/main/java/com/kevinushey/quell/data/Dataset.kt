@@ -37,6 +37,8 @@ class TimeSeries(
 
 @Serializable
 enum class ExperimentKind(val label: String) {
+    /** Plain accelerometer capture; takes part in the Spectrum and Signal tabs only. */
+    GENERAL("General"),
     DRIVE("Drive"),
     TAP("Tap test");
 }
@@ -57,7 +59,7 @@ data class DatasetMeta(
     val sensorName: String? = null,
     val recordedAt: String? = null,
     val extraFields: Map<String, String> = emptyMap(),
-    val kind: ExperimentKind = ExperimentKind.DRIVE,
+    val kind: ExperimentKind = ExperimentKind.GENERAL,
     /** Analysis window in seconds from the start of the recording; trimEnd <= 0 means "to the end". */
     val trimStart: Double = 0.0,
     val trimEnd: Double = 0.0,
