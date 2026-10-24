@@ -113,7 +113,9 @@ object AccelerometerParser {
         val columns = splitLine(header, delimiter).map { it.trim().trim('"').lowercase() }
 
         // Letters alone are not enough: a header-less first row may use scientific notation (1.0E-3).
-        val hasHeader = columns.any { it.toDoubleOrNull() == null }
+        // phyphox's "decimal comma" exports use ';' or a tab, so ',' cannot be the delimiter there.
+        val decimalComma = delimiter != ','
+        val hasHeader = columns.any { finite(it, decimalComma) == null }
         val layout = if (hasHeader)
             ColumnLayout.fromHeader(columns)
         else
@@ -132,16 +134,16 @@ object AccelerometerParser {
             val cells = splitLine(line, delimiter)
             if (cells.size <= layout.maxIndex)
                 return
-            val t = finite(cells[layout.time]) ?: return
+            val t = finite(cells[layout.time], decimalComma) ?: return
             if (axes) {
-                val vx = finite(cells[layout.x!!]) ?: return
-                val vy = finite(cells[layout.y!!]) ?: return
-                val vz = finite(cells[layout.z!!]) ?: return
+                val vx = finite(cells[layout.x!!], decimalComma) ?: return
+                val vy = finite(cells[layout.y!!], decimalComma) ?: return
+                val vz = finite(cells[layout.z!!], decimalComma) ?: return
                 time.add(t); x.add(vx); y.add(vy); z.add(vz)
             } else {
                 // Magnitude-only files: keep it on one axis so |a| and the summed
                 // Total power still equal the supplied values.
-                val vm = finite(cells[layout.magnitude!!]) ?: return
+                val vm = finite(cells[layout.magnitude!!], decimalComma) ?: return
                 time.add(t); x.add(vm); y.add(0.0); z.add(0.0)
             }
             if (time.size > maxRows)
@@ -166,7 +168,10 @@ object AccelerometerParser {
     }
 
     /** NaN and Infinity parse as doubles but poison every FFT downstream. */
-    private fun finite(cell: String): Double? = cell.toDoubleOrNull()?.takeIf { it.isFinite() }
+    private fun finite(cell: String, decimalComma: Boolean): Double? {
+        val text = if (decimalComma) cell.replace(',', '.') else cell
+        return text.toDoubleOrNull()?.takeIf { it.isFinite() }
+    }
 
     /**
      * A single wild timestamp (epoch seconds among relative ones, or the wrong

@@ -196,16 +196,19 @@ class DatasetRepository(private val context: Context) {
     suspend fun update(id: String, transform: (DatasetMeta) -> DatasetMeta) = withContext(Dispatchers.IO) {
         mutex.withLock {
             loadLocked()
-            _datasets.value = _datasets.value.map { if (it.id == id) transform(it) else it }
-            persistIndex()
+            // Persist first, so a failed write leaves the screens agreeing with the disk.
+            val next = _datasets.value.map { if (it.id == id) transform(it) else it }
+            persistIndex(next)
+            _datasets.value = next
         }
     }
 
     suspend fun updateAll(transform: (DatasetMeta) -> DatasetMeta) = withContext(Dispatchers.IO) {
         mutex.withLock {
             loadLocked()
-            _datasets.value = _datasets.value.map(transform)
-            persistIndex()
+            val next = _datasets.value.map(transform)
+            persistIndex(next)
+            _datasets.value = next
         }
     }
 
@@ -218,8 +221,8 @@ class DatasetRepository(private val context: Context) {
             if (from < 0 || to < 0 || to >= list.size)
                 return@withLock
             list.add(to, list.removeAt(from))
+            persistIndex(list)
             _datasets.value = list
-            persistIndex()
         }
     }
 
@@ -236,16 +239,18 @@ class DatasetRepository(private val context: Context) {
     suspend fun addSweep(sweep: Sweep) = withContext(Dispatchers.IO) {
         mutex.withLock {
             loadLocked()
-            _sweeps.value = _sweeps.value + sweep
-            persistSweeps()
+            val next = _sweeps.value + sweep
+            persistSweeps(next)
+            _sweeps.value = next
         }
     }
 
     suspend fun updateSweep(id: String, transform: (Sweep) -> Sweep) = withContext(Dispatchers.IO) {
         mutex.withLock {
             loadLocked()
-            _sweeps.value = _sweeps.value.map { if (it.id == id) transform(it) else it }
-            persistSweeps()
+            val next = _sweeps.value.map { if (it.id == id) transform(it) else it }
+            persistSweeps(next)
+            _sweeps.value = next
         }
     }
 
@@ -254,10 +259,11 @@ class DatasetRepository(private val context: Context) {
         mutex.withLock {
             loadLocked()
             val released = _datasets.value.map { if (it.sweepId == id) it.copy(sweepId = null, sweepValue = null) else it }
+            val remaining = _sweeps.value.filterNot { it.id == id }
             persistIndex(released)
             _datasets.value = released
-            _sweeps.value = _sweeps.value.filterNot { it.id == id }
-            persistSweeps()
+            persistSweeps(remaining)
+            _sweeps.value = remaining
         }
     }
 
@@ -266,8 +272,8 @@ class DatasetRepository(private val context: Context) {
         writeAtomic(indexFile, json.encodeToString(list))
     }
 
-    private fun persistSweeps() {
-        writeAtomic(sweepsFile, json.encodeToString(_sweeps.value))
+    private fun persistSweeps(list: List<Sweep>) {
+        writeAtomic(sweepsFile, json.encodeToString(list))
     }
 
     private fun writeAtomic(file: File, text: String) {

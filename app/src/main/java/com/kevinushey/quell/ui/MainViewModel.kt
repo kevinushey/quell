@@ -93,15 +93,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch {
-            // Settings are a convenience; the datasets must load even if they cannot be read.
-            try {
-                _analysis.value = settingsStore.analysis.first()
-                _appSettings.value = settingsStore.app.first()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                _messages.tryEmit("Settings could not be read; using defaults")
-            }
+            // SettingsStore replaces a damaged file and its flows fall back to defaults, so these cannot fail.
+            _analysis.value = settingsStore.analysis.first()
+            _appSettings.value = settingsStore.app.first()
             repo.load()
             _ready.value = true
         }

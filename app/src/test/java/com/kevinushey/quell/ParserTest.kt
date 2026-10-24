@@ -40,6 +40,23 @@ class ParserTest {
     }
 
     @Test
+    fun parsesDecimalCommaExports() {
+        // phyphox "CSV (Semicolon, decimal comma)" and "CSV (Tabulator, decimal comma)".
+        val semicolon = "\"Time (s)\";\"Acceleration x (m/s^2)\";\"Acceleration y (m/s^2)\";\"Acceleration z (m/s^2)\"\n" +
+            (0 until 50).joinToString("\n") { "${"%.9E".format(java.util.Locale.US, it * 0.0025).replace('.', ',')};0,5;3,4;-8,6" }
+        val a = AccelerometerParser.parseCsvText(semicolon)
+        assertEquals(50, a.size)
+        assertEquals(0.0025, a.time[1], 1e-12)
+        assertEquals(-8.6, a.z[10], 1e-9)
+
+        val tab = "Time (s)\tX\tY\tZ\n" + (0 until 50).joinToString("\n") { "${it},5\t1,25\t2\t3" }
+        val b = AccelerometerParser.parseCsvText(tab)
+        assertEquals(50, b.size)
+        assertEquals(1.25, b.x[0], 1e-9)
+        assertEquals(10.5, b.time[10], 1e-9)
+    }
+
+    @Test
     fun parsesMagnitudeOnlyFile() {
         val text = "time,absolute acceleration\n" + (0 until 50).joinToString("\n") { "${it * 0.01},${9.8 + it}" }
         val run = AccelerometerParser.parseCsvText(text)
