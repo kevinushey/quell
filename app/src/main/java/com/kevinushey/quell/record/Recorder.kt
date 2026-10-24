@@ -166,6 +166,7 @@ class Recorder(context: Context) : SensorEventListener {
 
     companion object {
         private const val RATE_WINDOW = 1024
+        private const val MAX_PREVIEW_GAP_SEC = 1.0
     }
 
     /** Everything captured so far. */
@@ -198,11 +199,13 @@ class Recorder(context: Context) : SensorEventListener {
     fun recentWindow(seconds: Double): TimeSeries? {
         if (count < 64)
             return null
+        // Walk back over contiguous samples only: a delivery gap would make the preview grid enormous.
         val tEnd = times[count - 1]
         var start = count - 1
-        while (start > 0 && tEnd - times[start] < seconds)
+        while (start > 0 && tEnd - times[start] < seconds && times[start] - times[start - 1] <= MAX_PREVIEW_GAP_SEC)
             start--
-        val n = count - start
+        if (count - start < 64)
+            return null
         return TimeSeries(
             times.copyOfRange(start, count),
             xs.copyOfRange(start, count),

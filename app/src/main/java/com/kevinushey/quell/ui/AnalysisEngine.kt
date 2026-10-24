@@ -2,6 +2,7 @@ package com.kevinushey.quell.ui
 
 import com.kevinushey.quell.data.AnalysisSettings
 import com.kevinushey.quell.data.DatasetMeta
+import com.kevinushey.quell.data.MemoryBudget
 import com.kevinushey.quell.data.TimeSeries
 import com.kevinushey.quell.dsp.Channel
 import com.kevinushey.quell.dsp.Normalization
@@ -26,6 +27,19 @@ class Resampled(val sampleRate: Double, val x: DoubleArray, val y: DoubleArray, 
     companion object {
         fun from(s: TimeSeries): Resampled {
             val fs = Resampler.estimateSampleRate(s.time)
+            // A trim window can span a gap the import never had to resample; refuse before allocating.
+            val length = Resampler.resampledLength(s.time, fs)
+            val limit = MemoryBudget.maxSamples()
+            if (s.size >= 2 && length > limit)
+                throw IllegalArgumentException(
+                    "The analysis window spans %.0f s at %.0f Hz (%d samples), more than this device can analyze (%d). Trim the window to exclude the gap.".format(
+                        java.util.Locale.US,
+                        s.time.last() - s.time.first(),
+                        fs,
+                        length,
+                        limit,
+                    )
+                )
             val x = Resampler.resample(s.time, s.x, fs)
             val y = Resampler.resample(s.time, s.y, fs)
             val z = Resampler.resample(s.time, s.z, fs)

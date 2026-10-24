@@ -139,22 +139,26 @@ fun RecordScreen(vm: MainViewModel, onDone: () -> Unit) {
         val tracker = TapTracker(settings.tapThreshold)
         while (status.recording) {
             delay(500)
+            // The preview is disposable; the capture is not. An analysis failure here must never propagate.
             if (tapMode) {
                 val recent = recorder.snapshotSince(tracker.resumeFrom) ?: continue
-                liveTaps = withContext(Dispatchers.Default) { tracker.update(recent) }
+                runCatching { withContext(Dispatchers.Default) { tracker.update(recent) } }
+                    .onSuccess { liveTaps = it }
                 continue
             }
             val window = recorder.recentWindow(4.0) ?: continue
-            liveSpectrum = withContext(Dispatchers.Default) {
-                val r = Resampled.from(window)
-                if (r.size < 256)
-                    return@withContext null
-                val seg = minOf(1024, Integer.highestOneBit(r.size))
-                val psd = AnalysisEngine.rawPsd(r, Channel.TOTAL, seg, WindowType.HANN, 0.5)
-                val total = DoubleArray(psd.size) { Normalization.toDb(psd.power[it]) }
-                val from = 1
-                ChartSeries("live", "Last 4 s", liveColor, psd.freq.copyOfRange(from, psd.size), total.copyOfRange(from, psd.size))
-            }
+            runCatching {
+                withContext(Dispatchers.Default) {
+                    val r = Resampled.from(window)
+                    if (r.size < 256)
+                        return@withContext null
+                    val seg = minOf(1024, Integer.highestOneBit(r.size))
+                    val psd = AnalysisEngine.rawPsd(r, Channel.TOTAL, seg, WindowType.HANN, 0.5)
+                    val total = DoubleArray(psd.size) { Normalization.toDb(psd.power[it]) }
+                    val from = 1
+                    ChartSeries("live", "Last 4 s", liveColor, psd.freq.copyOfRange(from, psd.size), total.copyOfRange(from, psd.size))
+                }
+            }.onSuccess { liveSpectrum = it }
         }
     }
 

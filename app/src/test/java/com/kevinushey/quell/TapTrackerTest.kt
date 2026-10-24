@@ -4,6 +4,7 @@ import com.kevinushey.quell.data.TimeSeries
 import com.kevinushey.quell.ui.TapAnalysis
 import com.kevinushey.quell.ui.TapTracker
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.PI
 import kotlin.math.exp
@@ -56,5 +57,8 @@ class TapTrackerTest {
         assertEquals(4, last.count)
         assertEquals(full.meanFreq, last.meanFreq, 0.2)
         assertEquals(taps[0], last.taps.minOf { it.impulseTime }, 0.05)
+        // Envelope times are "time after tap", regardless of where the tracker resumed.
+        for (tap in last.taps)
+            assertTrue("envelope not relative: ${tap.envelopeTimes.first()}", tap.envelopeTimes.first() < 3.0)
     }
 }

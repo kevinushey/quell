@@ -62,10 +62,17 @@ class Spectrum(
         return Spectrum(DoubleArray(idx.size) { freq[idx[it]] }, DoubleArray(idx.size) { power[idx[it]] }, segments, windowLength, binWidth)
     }
 
-    /** Width of bin i that lies inside [lo, hi]; each bin spans +/- half a bin width around its centre. */
+    /**
+     * Width of bin i that lies inside [lo, hi]; each bin spans +/- half a bin
+     * width around its centre. A band edge sitting at the spectrum's own limit
+     * (DC or Nyquist) takes the whole end bin, matching Welch's one-sided
+     * scaling so a full-band integral recovers the signal variance.
+     */
     private fun overlap(i: Int, lo: Double, hi: Double): Double {
         val half = binWidth / 2
-        return (minOf(hi, freq[i] + half) - maxOf(lo, freq[i] - half)).coerceAtLeast(0.0)
+        val bandLo = if (lo <= freq[0]) freq[0] - half else lo
+        val bandHi = if (hi >= freq[size - 1]) freq[size - 1] + half else hi
+        return (minOf(bandHi, freq[i] + half) - maxOf(bandLo, freq[i] - half)).coerceAtLeast(0.0)
     }
 
     /** Power averaged over [lo, hi], weighting edge bins by the part of them inside the band; NaN if nothing is. */
@@ -74,8 +81,11 @@ class Spectrum(
         var weight = 0.0
         for (i in 0 until size) {
             val w = overlap(i, lo, hi)
-            sum += power[i] * w
-            weight += w
+            // Only bins that really overlap contribute, so NaN padding outside the band stays out.
+            if (w > 0) {
+                sum += power[i] * w
+                weight += w
+            }
         }
         return if (weight > 0) sum / weight else Double.NaN
     }
@@ -89,8 +99,11 @@ class Spectrum(
         if (!covers(lo, hi))
             return Double.NaN
         var sum = 0.0
-        for (i in 0 until size)
-            sum += power[i] * overlap(i, lo, hi)
+        for (i in 0 until size) {
+            val w = overlap(i, lo, hi)
+            if (w > 0)
+                sum += power[i] * w
+        }
         return Math.sqrt(sum)
     }
 

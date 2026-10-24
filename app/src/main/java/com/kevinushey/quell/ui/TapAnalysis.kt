@@ -112,7 +112,8 @@ class TapTracker(private val threshold: Double, private val windowSeconds: Doubl
         val end = series.time.last()
         val pending = ArrayList<RingDownResult>()
         for (tap in summary.taps) {
-            val shifted = tap.copy(impulseTime = tap.impulseTime + origin, envelopeTimes = DoubleArray(tap.envelopeTimes.size) { tap.envelopeTimes[it] + origin })
+            // Only the impulse moves into recording time; envelope times stay relative to the tap.
+            val shifted = tap.copy(impulseTime = tap.impulseTime + origin)
             if (shifted.impulseTime + windowSeconds <= end) {
                 completed.add(shifted)
                 resumeFrom = maxOf(resumeFrom, shifted.impulseTime + windowSeconds)

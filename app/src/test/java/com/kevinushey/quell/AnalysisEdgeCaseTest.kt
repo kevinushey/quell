@@ -50,6 +50,49 @@ class AnalysisEdgeCaseTest {
     }
 
     @Test
+    fun fullBandIntegralRecoversSignalPower() {
+        // Alternating +1/-1 puts all power in the Nyquist bin, which Welch scales one-sided.
+        val fs = 400.0
+        val x = DoubleArray(4096) { if (it % 2 == 0) 1.0 else -1.0 }
+        val psd = Welch.psd(x, fs, 1024, WindowType.RECTANGULAR, 0.5)
+        assertEquals(1.0, psd.bandRms(0.0, 200.0), 0.02)
+
+        val tone = DoubleArray(16000) { 2.0 * sin(2 * PI * 37.5 * it / fs) }
+        val tonePsd = Welch.psd(tone, fs, 1024, WindowType.HANN)
+        assertEquals(sqrt(2.0), tonePsd.bandRms(0.0, 200.0), 0.05)
+    }
+
+    @Test
+    fun nanOutsideBandDoesNotPoisonIntegration() {
+        val narrow = Spectrum(DoubleArray(51) { it.toDouble() }, DoubleArray(51) { 1.0 })
+        val wide = narrow.onGrid(DoubleArray(201) { it.toDouble() })
+        assertTrue(wide.power[100].isNaN())
+        assertEquals(sqrt(10.0), wide.bandRms(10.0, 20.0), 1e-9)
+        assertEquals(1.0, wide.meanPower(10.0, 20.0), 1e-9)
+    }
+
+    @Test
+    fun resampledRefusesWindowsBeyondTheBudget() {
+        // 100 s at 400 Hz, a long gap, then a slow tail: the median rate stays 400 Hz over a 10,800 s span.
+        val time = ArrayList<Double>()
+        var t = 0.0
+        for (i in 0 until 40_000) { time.add(t); t += 1.0 / 400 }
+        t += 9_700.0
+        for (i in 0 until 2_000) { time.add(t); t += 1.0 / 50 }
+        val arr = time.toDoubleArray()
+        val series = com.kevinushey.quell.data.TimeSeries(arr, DoubleArray(arr.size), DoubleArray(arr.size), DoubleArray(arr.size))
+        val needed = Resampler.resampledLength(arr, Resampler.estimateSampleRate(arr))
+        if (needed > com.kevinushey.quell.data.MemoryBudget.maxSamples()) {
+            try {
+                com.kevinushey.quell.ui.Resampled.from(series)
+                fail("expected IllegalArgumentException")
+            } catch (e: IllegalArgumentException) {
+                assertTrue(e.message!!.contains("Trim"))
+            }
+        }
+    }
+
+    @Test
     fun bandRmsIsIndependentOfFrequencyGrid() {
         // Identical flat PSDs on 200 Hz and 400 Hz grids (256-point FFT) must integrate to the same band power.
         val coarse = Spectrum(DoubleArray(129) { it * 400.0 / 256 }, DoubleArray(129) { 1.0 })
