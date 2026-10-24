@@ -11,6 +11,8 @@ import com.kevinushey.quell.data.ByteBudgetCache
 import com.kevinushey.quell.data.DatasetMeta
 import com.kevinushey.quell.data.ImportException
 import com.kevinushey.quell.data.ParsedRun
+import com.kevinushey.quell.data.Sweep
+import com.kevinushey.quell.data.SweepParameter
 import com.kevinushey.quell.data.TimeSeries
 import com.kevinushey.quell.dsp.Spectrum
 import kotlinx.coroutines.CancellationException
@@ -46,6 +48,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val settingsStore = (app as QuellApp).settings
 
     val datasets: StateFlow<List<DatasetMeta>> = repo.datasets
+    val sweeps: StateFlow<List<Sweep>> = repo.sweeps
 
     private val _analysis = MutableStateFlow(AnalysisSettings())
     val analysis: StateFlow<AnalysisSettings> = _analysis
@@ -179,12 +182,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         repo.releaseSamples()
     }
 
-    /** Persists a recording; false means it was not saved and the caller must keep it. */
-    suspend fun addRecording(name: String, run: ParsedRun): Boolean = importMutex.withLock {
+    /**
+     * Persists a recording; false means it was not saved and the caller must keep it.
+     * Inside a sweep the run joins it at `value`, and the sweep remembers the step.
+     */
+    suspend fun addRecording(name: String, run: ParsedRun, sweep: Sweep? = null, value: Double? = null): Boolean = importMutex.withLock {
         _busy.value++
         try {
             releaseMemoryForSave()
-            repo.add(name, "Recorded on device", run)
+            repo.add(name, "Recorded on device", run) { meta ->
+                if (sweep == null) meta else withSweepValue(meta, sweep, value)
+            }
+            if (sweep != null && value != null)
+                repo.updateSweep(sweep.id) { it.advanced(value) }
             _messages.tryEmit("Saved recording \"$name\"")
             true
         } catch (e: Exception) {
@@ -220,6 +230,54 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setReference(id: String?) = updateAnalysis { it.copy(referenceId = id) }
 
+    /** Creates the sweep and returns it, so the caller can open it. */
+    suspend fun createSweep(name: String, parameter: SweepParameter, kind: com.kevinushey.quell.data.ExperimentKind): Sweep? {
+        val sweep = Sweep(
+            id = java.util.UUID.randomUUID().toString(),
+            name = name.trim().ifEmpty { "Sweep" },
+            parameter = parameter,
+            kind = kind,
+            createdAtEpochMs = System.currentTimeMillis(),
+        )
+        return try {
+            repo.addSweep(sweep)
+            sweep
+        } catch (e: Exception) {
+            _messages.tryEmit("Could not create sweep: ${e.message ?: e.javaClass.simpleName}")
+            null
+        }
+    }
+
+    fun updateSweep(id: String, transform: (Sweep) -> Sweep) {
+        launchReporting("update sweep") { repo.updateSweep(id, transform) }
+    }
+
+    fun deleteSweep(id: String) {
+        launchReporting("delete sweep") {
+            repo.deleteSweep(id)
+            _messages.tryEmit("Sweep deleted; its runs were kept")
+        }
+    }
+
+    fun addToSweep(sweep: Sweep, metaId: String, value: Double?) = updateMeta(metaId) { withSweepValue(it, sweep, value) }
+
+    fun setSweepValue(sweep: Sweep, metaId: String, value: Double?) = updateMeta(metaId) { withSweepValue(it, sweep, value) }
+
+    fun removeFromSweep(metaId: String) = updateMeta(metaId) { it.copy(sweepId = null, sweepValue = null) }
+
+    /** Mass sweeps keep the value in damperMassGrams, which the Damper tab already reads. */
+    private fun withSweepValue(meta: DatasetMeta, sweep: Sweep, value: Double?): DatasetMeta =
+        if (sweep.parameter == SweepParameter.MASS)
+            meta.copy(sweepId = sweep.id, sweepValue = null, damperMassGrams = value ?: meta.damperMassGrams)
+        else
+            meta.copy(sweepId = sweep.id, sweepValue = value ?: meta.sweepValue)
+
+    /** Spectrum of one dataset under the given settings, visible or not; served from the PSD cache when possible. */
+    suspend fun spectrumResult(meta: DatasetMeta, s: AnalysisSettings): SpectrumResult? {
+        val (raw, fs) = cachedPsd(meta, s) ?: return null
+        return withContext(Dispatchers.Default) { AnalysisEngine.finish(meta, raw, fs, s) }
+    }
+
     fun delete(id: String) {
         launchReporting("delete dataset") {
             repo.delete(id)
@@ -231,6 +289,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             if (_analysis.value.referenceId == id)
                 setReference(null)
+            for (sw in repo.sweeps.value)
+                if (sw.referenceId == id)
+                    repo.updateSweep(sw.id) { it.copy(referenceId = null) }
             _messages.tryEmit("Dataset deleted")
         }
     }

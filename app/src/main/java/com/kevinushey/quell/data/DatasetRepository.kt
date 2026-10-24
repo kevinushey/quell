@@ -34,12 +34,16 @@ class DatasetRepository(private val context: Context) {
     private val json = indexJson
     private val dir: File = File(context.filesDir, "datasets").apply { mkdirs() }
     private val indexFile = File(dir, "index.json")
+    private val sweepsFile = File(dir, "sweeps.json")
     private val mutex = Mutex()
     private val cache = ByteBudgetCache<String, TimeSeries>(ByteBudgetCache.defaultBudget()) { it.size.toLong() * 4 * 8 }
     private var loaded = false
 
     private val _datasets = MutableStateFlow<List<DatasetMeta>>(emptyList())
     val datasets: StateFlow<List<DatasetMeta>> = _datasets
+
+    private val _sweeps = MutableStateFlow<List<Sweep>>(emptyList())
+    val sweeps: StateFlow<List<Sweep>> = _sweeps
 
     /** Problems that lost or endangered data, for the UI to surface. */
     private val _problems = MutableSharedFlow<String>(extraBufferCapacity = 4)
@@ -57,6 +61,7 @@ class DatasetRepository(private val context: Context) {
         if (loaded)
             return
         loaded = true
+        loadSweepsLocked()
         val atomic = AtomicFile(indexFile)
         if (!indexFile.exists() && !File(dir, "index.json.bak").exists())
             return
@@ -73,6 +78,22 @@ class DatasetRepository(private val context: Context) {
         _datasets.value = decoded.filter { File(dir, "${it.id}.bin").exists() }
     }
 
+    private fun loadSweepsLocked() {
+        val atomic = AtomicFile(sweepsFile)
+        if (!sweepsFile.exists() && !File(dir, "sweeps.json.bak").exists())
+            return
+        val text = runCatching { String(atomic.readFully(), Charsets.UTF_8) }.getOrNull()
+        val decoded = text?.let { runCatching { json.decodeFromString<List<Sweep>>(it) }.getOrNull() }
+        if (decoded == null) {
+            val kept = File(dir, "sweeps.broken-${System.currentTimeMillis()}.json")
+            if (sweepsFile.exists())
+                sweepsFile.renameTo(kept)
+            _problems.tryEmit("The sweep list could not be read. A copy was kept as ${kept.name}; the runs themselves are intact.")
+            return
+        }
+        _sweeps.value = decoded
+    }
+
     suspend fun importUri(uri: Uri): DatasetMeta = withContext(Dispatchers.IO) {
         val name = displayName(uri)
         val parsed = context.contentResolver.openInputStream(uri)?.use { stream ->
@@ -81,7 +102,13 @@ class DatasetRepository(private val context: Context) {
         add(defaultName(name), name, parsed)
     }
 
-    suspend fun add(name: String, sourceName: String, parsed: ParsedRun): DatasetMeta = withContext(Dispatchers.IO) {
+    /** `configure` stamps extra metadata (sweep membership) before the entry is first persisted. */
+    suspend fun add(
+        name: String,
+        sourceName: String,
+        parsed: ParsedRun,
+        configure: (DatasetMeta) -> DatasetMeta = { it },
+    ): DatasetMeta = withContext(Dispatchers.IO) {
         val series = parsed.series
         val id = UUID.randomUUID().toString()
         val file = File(dir, "$id.bin")
@@ -95,20 +122,22 @@ class DatasetRepository(private val context: Context) {
 
         mutex.withLock {
             loadLocked()
-            val meta = DatasetMeta(
-                id = id,
-                name = uniqueName(name),
-                sourceName = sourceName,
-                importedAtEpochMs = System.currentTimeMillis(),
-                sampleCount = series.size,
-                sampleRate = Resampler.estimateSampleRate(series.time),
-                durationSec = series.duration,
-                colorIndex = nextColorIndex(),
-                deviceModel = parsed.deviceModel,
-                sensorName = parsed.sensorName,
-                recordedAt = parsed.recordedAt,
-                extraFields = parsed.extraFields,
-                kind = parsed.kind,
+            val meta = configure(
+                DatasetMeta(
+                    id = id,
+                    name = uniqueName(name),
+                    sourceName = sourceName,
+                    importedAtEpochMs = System.currentTimeMillis(),
+                    sampleCount = series.size,
+                    sampleRate = Resampler.estimateSampleRate(series.time),
+                    durationSec = series.duration,
+                    colorIndex = nextColorIndex(),
+                    deviceModel = parsed.deviceModel,
+                    sensorName = parsed.sensorName,
+                    recordedAt = parsed.recordedAt,
+                    extraFields = parsed.extraFields,
+                    kind = parsed.kind,
+                )
             )
             // Persist first: a failed write must leave neither a phantom entry nor an orphan file.
             val next = _datasets.value + meta
@@ -204,12 +233,48 @@ class DatasetRepository(private val context: Context) {
         }
     }
 
+    suspend fun addSweep(sweep: Sweep) = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            loadLocked()
+            _sweeps.value = _sweeps.value + sweep
+            persistSweeps()
+        }
+    }
+
+    suspend fun updateSweep(id: String, transform: (Sweep) -> Sweep) = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            loadLocked()
+            _sweeps.value = _sweeps.value.map { if (it.id == id) transform(it) else it }
+            persistSweeps()
+        }
+    }
+
+    /** Removes the sweep and releases its members; the runs themselves stay. */
+    suspend fun deleteSweep(id: String) = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            loadLocked()
+            val released = _datasets.value.map { if (it.sweepId == id) it.copy(sweepId = null, sweepValue = null) else it }
+            persistIndex(released)
+            _datasets.value = released
+            _sweeps.value = _sweeps.value.filterNot { it.id == id }
+            persistSweeps()
+        }
+    }
+
     /** Write-to-temp-then-rename, so a crash mid-write leaves the previous index intact. */
     private fun persistIndex(list: List<DatasetMeta> = _datasets.value) {
-        val atomic = AtomicFile(indexFile)
+        writeAtomic(indexFile, json.encodeToString(list))
+    }
+
+    private fun persistSweeps() {
+        writeAtomic(sweepsFile, json.encodeToString(_sweeps.value))
+    }
+
+    private fun writeAtomic(file: File, text: String) {
+        val atomic = AtomicFile(file)
         val out = atomic.startWrite()
         try {
-            out.write(json.encodeToString(list).toByteArray(Charsets.UTF_8))
+            out.write(text.toByteArray(Charsets.UTF_8))
             atomic.finishWrite(out)
         } catch (e: Exception) {
             atomic.failWrite(out)

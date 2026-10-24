@@ -92,6 +92,9 @@ data class DatasetMeta(
     val trimEnd: Double = 0.0,
     /** Mass of the damper fitted during this run, if any. */
     val damperMassGrams: Double? = null,
+    /** Sweep this run belongs to, and its parameter value there (mass sweeps use damperMassGrams instead). */
+    val sweepId: String? = null,
+    val sweepValue: Double? = null,
 ) {
     val isTrimmed: Boolean get() = trimStart > 0.0 || (trimEnd > 0.0 && trimEnd < durationSec)
     val effectiveTrimEnd: Double get() = if (trimEnd > 0.0) minOf(trimEnd, durationSec) else durationSec

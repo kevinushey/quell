@@ -61,6 +61,26 @@ object Exporter {
             share(context, file, "text/csv")
         }
 
+    /** One row per sweep run: parameter value and the numbers the optimum is read from. */
+    suspend fun shareSweepCsv(context: Context, sweep: com.kevinushey.quell.data.Sweep, summary: com.kevinushey.quell.ui.SweepSummary) =
+        withContext(Dispatchers.IO) {
+            val safe = sweep.name.replace(Regex("[^A-Za-z0-9._ -]"), "_")
+            val file = File(exportDir(context), "sweep-$safe-${stamp()}.csv")
+            file.bufferedWriter().use { w ->
+                val unit = sweep.parameter.unit.ifEmpty { "value" }
+                w.write("# sweep=${sweep.name} parameter=${sweep.parameter.name} kind=${sweep.kind.name} metric=${com.kevinushey.quell.ui.SweepAnalysis.metricLabel(sweep.kind)}\n")
+                summary.optimum?.let { w.write("# optimum=$it half_width=${summary.optimumHalfWidth}\n") }
+                w.write("run,${sweep.parameter.name.lowercase(Locale.US)}_$unit,metric,metric_error,peak_hz,band_rms_db,problem\n")
+                for (p in summary.points) {
+                    w.write("\"${p.meta.name.replace("\"", "\"\"")}\",")
+                    w.write("${p.value ?: ""},${csvNumber(p.metric)},${csvNumber(p.error)},${csvNumber(p.peakFreq)},${csvNumber(p.bandRmsDb)},${p.problem ?: ""}\n")
+                }
+            }
+            share(context, file, "text/csv")
+        }
+
+    private fun csvNumber(v: Double): String = if (v.isFinite()) v.toString() else ""
+
     /** Re-export a dataset's raw samples as CSV (useful for recordings made in-app). */
     suspend fun shareRawCsv(context: Context, meta: DatasetMeta, series: TimeSeries) = withContext(Dispatchers.IO) {
         val safe = meta.name.replace(Regex("[^A-Za-z0-9._ -]"), "_")
