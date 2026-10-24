@@ -18,7 +18,7 @@ class ParserTest {
         val sb = StringBuilder()
         sb.append("\"Time (s)\",\"Acceleration x (m/s^2)\",\"Acceleration y (m/s^2)\",\"Acceleration z (m/s^2)\",\"Absolute acceleration (m/s^2)\"\n")
         for (i in 0 until n)
-            sb.append("${"%.9E".format(i * 0.0025)},${0.5},${3.4},${-8.6},${9.3}\n")
+            sb.append("${"%.9E".format(java.util.Locale.US, i * 0.0025)},${0.5},${3.4},${-8.6},${9.3}\n")
         return sb.toString()
     }
 
@@ -229,7 +229,7 @@ class ParserTest {
 
     @Test
     fun headerlessScientificNotationIsData() {
-        val text = (0 until 50).joinToString("\n") { "${"%.3E".format(it * 0.01)},1,2,3" }
+        val text = (0 until 50).joinToString("\n") { "${"%.3E".format(java.util.Locale.US, it * 0.01)},1,2,3" }
         val run = AccelerometerParser.parseCsvText(text)
         assertEquals(50, run.size)
         assertEquals(0.0, run.time[0], 1e-9)

@@ -166,6 +166,25 @@ class SweepAnalysisTest {
     }
 
     @Test
+    fun displaySmoothingDoesNotShrinkTheSweepError() {
+        // The sweep reads the raw peak, so smoothing the display must leave its error alone.
+        val fs = 400.0
+        val x = DoubleArray(8000) { 9.81 + 0.5 * Math.sin(2 * Math.PI * 25.0 * it / fs) + 0.05 * Math.sin(it * 0.7) }
+        val raw = com.kevinushey.quell.dsp.Welch.psd(x, fs, 1024)
+        val plain = com.kevinushey.quell.data.AnalysisSettings(smoothingBins = 1)
+        val smooth = plain.copy(smoothingBins = 15)
+        val m = meta("a", 300.0)
+        val base = com.kevinushey.quell.ui.AnalysisEngine.finish(meta("b", null), raw, fs, plain)
+        val r1 = com.kevinushey.quell.ui.AnalysisEngine.finish(m, raw, fs, plain)
+        val r15 = com.kevinushey.quell.ui.AnalysisEngine.finish(m, raw, fs, smooth)
+        assertTrue(r15.randomErrorDb < r1.randomErrorDb)
+        val e1 = SweepAnalysis.drivePoints(sweep, listOf(r1), base, 20.0, 30.0)[0].ownError
+        val e15 = SweepAnalysis.drivePoints(sweep, listOf(r15), base, 20.0, 30.0)[0].ownError
+        assertEquals(e1, e15, 1e-12)
+        assertEquals(r1.segmentErrorDb, e1, 1e-12)
+    }
+
+    @Test
     fun twoValuesPointTheWay() {
         val pts = listOf(point(300.0, -2.0), point(350.0, -4.0))
         val summary = SweepAnalysis.summarize(sweep, pts)

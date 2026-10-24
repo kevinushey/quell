@@ -104,7 +104,8 @@ class SyncPlan(
                 val r = remote[name] ?: return false
                 return expected == null || r.size < 0 || r.size == expected
             }
-            val bins = localIds.filter { !complete("$it.bin", localBinSizes[it]) }
+            // A run deleted on another phone (a folder tombstone) is kept here but never uploaded again.
+            val bins = localIds.filter { it !in deletedIds && !complete("$it.bin", localBinSizes[it]) }
             val csvs = if (csv) localIds.filter { id -> state.csvNames[id]?.let { it !in remote } ?: true } else emptyList()
             val deletions = LinkedHashMap<String, List<String>>()
             for (id in deletedIds) {

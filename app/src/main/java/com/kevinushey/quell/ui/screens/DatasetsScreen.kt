@@ -551,8 +551,7 @@ private fun LocateResultsDialog(vm: MainViewModel, meta: DatasetMeta, threshold:
                 s.ranked.isEmpty() -> Text("No clean tap above ${"%.1f".format(java.util.Locale.US, threshold)} m/s^2 was found in this recording. Lower the tap threshold in analysis options, or check that the taps rang long enough to fit.")
                 else -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(s.note, style = MaterialTheme.typography.bodySmall)
-                    if (s.ranked.isNotEmpty())
-                        Text("Per location (strongest first)", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 6.dp))
+                    Text("Per location (strongest first)", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 6.dp))
                     for (l in s.ranked)
                         Text(
                             "%s: %d taps, shape %.2f, ring %.2f m/s^2, fn %.1f Hz".format(java.util.Locale.US, l.label, l.taps, s.shape(l), l.meanAmplitude, l.meanFreq),

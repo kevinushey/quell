@@ -42,6 +42,8 @@ data class SyncStatus(
     val notOnThisPhone: Int = 0,
     /** This phone's index could not be fully read; the folder keeps its own entries, so nothing is lost there. */
     val indexDegraded: Boolean = false,
+    /** Runs on this phone that were deleted on another phone sharing the folder; kept here, not mirrored. */
+    val deletedElsewhere: Int = 0,
 )
 
 /** What a restore did, for the caller to report. */
@@ -106,9 +108,12 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         s.launch { syncNow(tree, csv) }
     }
 
-    /** "Restore from folder": result arrives on [events]. */
+    /** "Restore from folder": result arrives on [events]. A restore already under way is not queued twice. */
     fun requestRestore(tree: Uri) {
         val s = scope ?: return
+        if (_status.value.restoring)
+            return
+        _status.value = _status.value.copy(restoring = true)
         s.launch {
             val message = try {
                 val result = restore(tree)
@@ -140,6 +145,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                     lastError = null,
                     notOnThisPhone = outcome.notOnThisPhone,
                     indexDegraded = repo.degraded.value,
+                    deletedElsewhere = outcome.deletedElsewhere,
                 )
             } catch (e: CancellationException) {
                 throw e
@@ -151,13 +157,12 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         }
     }
 
-    private class MirrorOutcome(val mirrored: Int, val notOnThisPhone: Int)
+    private class MirrorOutcome(val mirrored: Int, val notOnThisPhone: Int, val deletedElsewhere: Int)
 
     private suspend fun mirror(tree: Uri, csv: Boolean): MirrorOutcome {
         val remote = listChildren(tree)
         val state = loadState()
         val metas = repo.datasets.value
-        val deleted = repo.deletedIds.value
         val localIds = metas.map { it.id }.toSet()
 
         // The folder's index carries forward entries this phone does not have, unless they were deleted here.
@@ -171,10 +176,14 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             saveState(seen)
         val remoteIndex: List<DatasetMeta> = index.items ?: damagedOrAside(remote, "index.json", state.badIndexHash, index.badHash!!)
         val remoteSweeps: List<Sweep> = sweepsRead.items ?: damagedOrAside(remote, "sweeps.json", state.badSweepsHash, sweepsRead.badHash!!)
+        // Tombstones live in the folder too, so a deletion made on one phone is not undone by another.
+        val remoteTombstones = readRemoteTombstones(remote)
+        val deleted = remoteTombstones + repo.deletedIds.value
         val mergedIndex = SyncPlan.mergeIndex(metas, remoteIndex, deleted)
         val mergedSweeps = SyncPlan.mergeSweeps(repo.sweeps.value, remoteSweeps, deleted)
         val indexBytes = DatasetRepository.indexJson.encodeToString(mergedIndex).toByteArray(Charsets.UTF_8)
         val sweepsBytes = DatasetRepository.indexJson.encodeToString(mergedSweeps).toByteArray(Charsets.UTF_8)
+        val tombstoneBytes = DatasetRepository.indexJson.encodeToString(deleted.sorted()).toByteArray(Charsets.UTF_8)
         val indexHash = sha1(indexBytes)
         val sweepsHash = sha1(sweepsBytes)
 
@@ -240,6 +249,8 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             writeDocument(tree, remote, "index.json", "application/json") { it.write(indexBytes) }
         if (plan.writeSweeps && indexWriteSafe)
             writeDocument(tree, remote, "sweeps.json", "application/json") { it.write(sweepsBytes) }
+        if (deleted != remoteTombstones || ("deleted.json" !in remote && deleted.isNotEmpty()))
+            writeDocument(tree, remote, "deleted.json", "application/json") { it.write(tombstoneBytes) }
 
         // Every local dataset with a complete remote .bin counts as mirrored, whoever wrote it.
         for (meta in metas) {
@@ -261,7 +272,17 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             repo.forgetDeleted(settled.toSet())
         if (!indexWriteSafe)
             throw IllegalStateException("The folder's index lists datasets this pass cannot account for; files were mirrored but the index was left alone")
-        return MirrorOutcome(metas.count { it.id in mirrored }, plan.notOnThisPhone.size)
+        return MirrorOutcome(metas.count { it.id in mirrored }, plan.notOnThisPhone.size, metas.count { it.id in remoteTombstones && it.id !in repo.deletedIds.value })
+    }
+
+    /** Ids deleted on any phone sharing the folder. A damaged list is treated as empty and rewritten. */
+    private fun readRemoteTombstones(remote: Map<String, Child>): Set<String> {
+        val uri = remote["deleted.json"]?.uri ?: return emptySet()
+        val bytes = readBytes(uri, "deleted.json")
+        return runCatching { DatasetRepository.indexJson.decodeFromString<List<String>>(String(bytes, Charsets.UTF_8)) }
+            .getOrDefault(emptyList())
+            .filter { ID_SHAPE.matches(it) }
+            .toSet()
     }
 
     /** A damaged folder file: set aside on its second sighting (then treated as absent), otherwise the pass stops here. */
@@ -335,13 +356,12 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
      * try; nothing marks them off.
      */
     suspend fun restore(tree: Uri): RestoreResult = withContext(Dispatchers.IO) {
-        mutex.withLock {
-            _status.value = _status.value.copy(restoring = true)
-            try {
-                restoreLocked(tree)
-            } finally {
-                _status.value = _status.value.copy(restoring = false)
-            }
+        // Busy from the moment it is asked for, including the wait for a running mirror pass.
+        _status.value = _status.value.copy(restoring = true)
+        try {
+            mutex.withLock { restoreLocked(tree) }
+        } finally {
+            _status.value = _status.value.copy(restoring = false)
         }
     }
 
@@ -355,7 +375,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             val sweepsRead = readRemoteSweeps(remote)
             val sweeps = sweepsRead.items ?: emptyList()
             val have = repo.datasets.value.map { it.id }.toSet()
-            val deleted = repo.deletedIds.value
+            val deleted = repo.deletedIds.value + readRemoteTombstones(remote)
             val incoming = ArrayList<DatasetMeta>()
             val skipped = ArrayList<String>()
             if (sweepsRead.items == null)
@@ -418,13 +438,29 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         val out = LinkedHashMap<String, Child>()
         val cursor = context.contentResolver.query(
             children,
-            arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_SIZE),
+            arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_SIZE,
+                DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+            ),
             null, null, null,
         ) ?: throw IllegalStateException("The folder is not reachable; pick it again in Settings")
         cursor.use { c ->
+            // A cloud provider may answer with part of the folder while it fetches the rest; planning on that
+            // would create duplicates and forget deletions. Wait for the next pass instead.
+            if (c.extras?.getBoolean(DocumentsContract.EXTRA_LOADING, false) == true)
+                throw IllegalStateException("The folder listing is still loading; it will be retried.")
+            val modified = HashMap<String, Long>()
             while (c.moveToNext()) {
+                val name = c.getString(1)
                 val size = if (c.isNull(2)) -1L else c.getLong(2)
-                out[c.getString(1)] = Child(DocumentsContract.buildDocumentUriUsingTree(tree, c.getString(0)), size)
+                val stamp = if (c.isNull(3)) 0L else c.getLong(3)
+                // Providers that allow duplicate names: the newest one is the live copy.
+                if (name in out && modified.getValue(name) >= stamp)
+                    continue
+                modified[name] = stamp
+                out[name] = Child(DocumentsContract.buildDocumentUriUsingTree(tree, c.getString(0)), size)
             }
         }
         return out

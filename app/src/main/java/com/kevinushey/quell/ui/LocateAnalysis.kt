@@ -62,10 +62,10 @@ object LocateAnalysis {
             LocationStat(i, g.size, amps.mean(), amps.standardError(), norms.mean(), norms.standardError(), g.map { it.naturalFreq }.mean())
         }
         val ranked = stats.filter { it.taps > 0 }.sortedByDescending { it.meanNormalized }
-        return LocateSummary(stats, ranked, note(ranked, count))
+        return LocateSummary(stats, ranked, note(ranked))
     }
 
-    private fun note(ranked: List<LocationStat>, count: Int): String {
+    private fun note(ranked: List<LocationStat>): String {
         if (ranked.isEmpty())
             return "No clean tap yet. Strike once, wait for the ring to die away, and repeat; move on with \"Next location\"."
         if (ranked.size == 1)

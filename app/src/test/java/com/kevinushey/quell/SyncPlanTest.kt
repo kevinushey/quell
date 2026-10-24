@@ -159,6 +159,16 @@ class SyncPlanTest {
     }
 
     @Test
+    fun aRunDeletedOnAnotherPhoneIsNotUploadedAgain() {
+        // b is local here but tombstoned in the folder: it is neither uploaded nor carried, and nothing is deleted here.
+        val r = remote("a.bin", "index.json", "sweeps.json", "deleted.json")
+        val state = SyncState(mirrored = setOf("a"), indexHash = "i1", sweepsHash = "s1")
+        val p = plan(listOf("a", "b"), r, state, indexIds = listOf("a"), deleted = setOf("b"))
+        assertTrue(p.binsToWrite.isEmpty())
+        assertTrue(p.deletions.isEmpty())
+    }
+
+    @Test
     fun csvCopiesFollowTheToggle() {
         val r = remote("a.bin", "a-run.csv", "index.json", "sweeps.json")
         val state = SyncState(mirrored = setOf("a"), csvNames = mapOf("a" to "a-run.csv"), indexHash = "i1", sweepsHash = "s1")

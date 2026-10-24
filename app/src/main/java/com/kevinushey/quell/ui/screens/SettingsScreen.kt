@@ -83,6 +83,13 @@ fun SettingsScreen(vm: MainViewModel, onOpenGuide: () -> Unit) {
                     color = MaterialTheme.colorScheme.error,
                 )
             }
+            if (sync.deletedElsewhere > 0) {
+                Text(
+                    "${sync.deletedElsewhere} run${if (sync.deletedElsewhere == 1) "" else "s"} on this phone ${if (sync.deletedElsewhere == 1) "was" else "were"} deleted on another phone sharing the folder. ${if (sync.deletedElsewhere == 1) "It stays" else "They stay"} here but ${if (sync.deletedElsewhere == 1) "is" else "are"} not mirrored; delete ${if (sync.deletedElsewhere == 1) "it" else "them"} here to agree.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             if (sync.notOnThisPhone > 0) {
                 Text(
                     "The folder holds ${sync.notOnThisPhone} dataset${if (sync.notOnThisPhone == 1) "" else "s"} this phone does not have. \"Restore from folder\" brings them in; they stay in the folder either way.",

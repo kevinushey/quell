@@ -108,9 +108,11 @@ object SweepAnalysis {
             }
             val metric = if (problem == null) 10 * log10(peak!!.power / refPeak!!.power) else Double.NaN
             val rmsDb = if (problem == null && refRms > 0 && rms > 0) 20 * log10(rms / refRms) else Double.NaN
-            // Both runs contribute random error to the level versus baseline; the baseline's is shared by every point.
-            val err = sqrt(r.randomErrorDb * r.randomErrorDb + (baseline?.randomErrorDb ?: 0.0).let { it * it })
-            SweepPoint(r.meta, sweep.valueOf(r.meta), metric, peak?.freq ?: Double.NaN, rmsDb, err, problem, ownError = r.randomErrorDb)
+            // The peak is read off the raw spectrum, so its error is the raw bin's (display smoothing does not help it).
+            // Both runs contribute to the level versus baseline; the baseline's share is common to every point.
+            val own = r.segmentErrorDb
+            val err = sqrt(own * own + (baseline?.segmentErrorDb ?: 0.0).let { it * it })
+            SweepPoint(r.meta, sweep.valueOf(r.meta), metric, peak?.freq ?: Double.NaN, rmsDb, err, problem, ownError = own)
         }
     }
 

@@ -82,8 +82,15 @@ class SpectrumResult(
     var effectiveAverages: Double = raw.segments.toDouble().coerceAtLeast(1.0)
         internal set
 
-    /** One-sigma random error of the PSD estimate in dB: 10*log10(e) / sqrt(n). */
+    /** One-sigma random error of the displayed (smoothed) PSD in dB: 10*log10(e) / sqrt(n). */
     val randomErrorDb: Double get() = if (effectiveAverages > 0) 4.343 / Math.sqrt(effectiveAverages) else Double.NaN
+
+    /** Effective Welch segments alone, without display smoothing: what a reading of the raw spectrum rests on. */
+    var effectiveSegments: Double = raw.segments.toDouble().coerceAtLeast(1.0)
+        internal set
+
+    /** One-sigma random error of a single raw bin in dB; the sweep's peak metric carries this one. */
+    val segmentErrorDb: Double get() = if (effectiveSegments > 0) 4.343 / Math.sqrt(effectiveSegments) else Double.NaN
 }
 
 data class PsdKey(
@@ -134,10 +141,14 @@ object AnalysisEngine {
         val separation = if (normalized.binWidth > 0) Math.ceil(0.02 * span / normalized.binWidth).toInt().coerceAtLeast(4) else 4
         val peaks = if (s.showPeaks) Peaks.find(normalized.freq, display, s.peakCount, minSeparationBins = separation) else emptyList()
         val binsCombined = Spectrum.effectiveSmoothingBins(restricted.size, s.smoothingBins)
-        val averages = Welch.effectiveSegments(raw.segments, s.segmentSize, s.window, s.overlap) *
+        val segments = Welch.effectiveSegments(raw.segments, s.segmentSize, s.window, s.overlap)
+        val averages = segments *
             Welch.effectiveSmoothingBins(binsCombined, s.segmentSize, s.window, raw.windowLength.takeIf { it > 0 } ?: s.segmentSize)
         return SpectrumResult(meta, raw, normalized, display, peaks, sampleRate, refScale, refMissing)
-            .also { it.effectiveAverages = averages.coerceAtLeast(1.0) }
+            .also {
+                it.effectiveAverages = averages.coerceAtLeast(1.0)
+                it.effectiveSegments = segments.coerceAtLeast(1.0)
+            }
     }
 
     fun yAxisLabel(s: AnalysisSettings): String = when {
