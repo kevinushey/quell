@@ -40,7 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kevinushey.quell.data.ExperimentKind
 import com.kevinushey.quell.data.ParsedRun
-import com.kevinushey.quell.ui.TapAnalysis
+import com.kevinushey.quell.ui.TapTracker
 import com.kevinushey.quell.ui.TapSummary
 import androidx.compose.runtime.saveable.rememberSaveable
 import com.kevinushey.quell.dsp.Channel
@@ -135,11 +135,13 @@ fun RecordScreen(vm: MainViewModel, onDone: () -> Unit) {
     LaunchedEffect(status.recording, tapMode) {
         liveSpectrum = null
         liveTaps = null
+        // Finalized taps are kept; each pass analyzes only the capture since the last one.
+        val tracker = TapTracker(settings.tapThreshold)
         while (status.recording) {
             delay(500)
             if (tapMode) {
-                val all = recorder.snapshot() ?: continue
-                liveTaps = withContext(Dispatchers.Default) { TapAnalysis.analyze(all, settings.tapThreshold) }
+                val recent = recorder.snapshotSince(tracker.resumeFrom) ?: continue
+                liveTaps = withContext(Dispatchers.Default) { tracker.update(recent) }
                 continue
             }
             val window = recorder.recentWindow(4.0) ?: continue

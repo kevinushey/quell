@@ -77,12 +77,13 @@ class Recorder(context: Context) : SensorEventListener {
     fun stop(): ParsedRun? {
         manager.unregisterListener(this)
         _status.value = _status.value.copy(recording = false)
-        if (count < 16) {
+        // What survives the analysis limit is what gets offered for saving.
+        val kept = if (count < 16) 0 else Resampler.analyzablePrefix(times.copyOf(count), maxSamples.toLong())
+        if (kept < 16) {
             releaseBuffers()
             return null
         }
 
-        val kept = analyzableCount()
         val series = TimeSeries(times.copyOf(kept), xs.copyOf(kept), ys.copyOf(kept), zs.copyOf(kept))
         releaseBuffers()
         val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
@@ -163,31 +164,34 @@ class Recorder(context: Context) : SensorEventListener {
         return spanSec * maxOf(peakRate, running) + 1
     }
 
-    /**
-     * Number of leading samples whose exact resampled length fits the limit.
-     * The projection is conservative, so this normally returns `count`.
-     */
-    private fun analyzableCount(): Int {
-        val time = times.copyOf(count)
-        val fs = Resampler.estimateSampleRate(time)
-        if (fs <= 0 || Resampler.resampledLength(time, fs) <= maxSamples)
-            return count
-        val maxSpan = (maxSamples - 1) / fs
-        var n = count
-        while (n > 0 && time[n - 1] - time[0] > maxSpan)
-            n--
-        return n
-    }
-
     companion object {
         private const val RATE_WINDOW = 1024
     }
 
     /** Everything captured so far. */
-    fun snapshot(): TimeSeries? {
+    fun snapshot(): TimeSeries? = snapshotSince(0.0)
+
+    /** Samples from `seconds` (recording time base) onward, so live analysis need not copy the whole capture. */
+    fun snapshotSince(seconds: Double): TimeSeries? {
         if (count < 64)
             return null
-        return TimeSeries(times.copyOf(count), xs.copyOf(count), ys.copyOf(count), zs.copyOf(count))
+        var start = 0
+        var end = count
+        while (start < end) {
+            val mid = (start + end) ushr 1
+            if (times[mid] < seconds)
+                start = mid + 1
+            else
+                end = mid
+        }
+        if (count - start < 64)
+            start = (count - 64).coerceAtLeast(0)
+        return TimeSeries(
+            times.copyOfRange(start, count),
+            xs.copyOfRange(start, count),
+            ys.copyOfRange(start, count),
+            zs.copyOfRange(start, count),
+        )
     }
 
     /** Last few seconds of samples, for a live preview spectrum. */

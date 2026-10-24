@@ -24,23 +24,53 @@ object Resampler {
         if (time.size < 2)
             return 0.0
 
-        // A strided subsample of the gaps gives the same median without three full-length copies.
-        val gaps = time.size - 1
-        val stride = maxOf(1, gaps / MAX_DELTAS)
-        val deltas = DoubleArray(gaps / stride + 1)
-        var n = 0
-        var i = 0
-        while (i < gaps) {
+        // Every gap is inspected (so repeated timestamps cannot hide the real spacing), but only a
+        // bounded reservoir sample of the positive ones is kept and sorted. Reservoir sampling is
+        // uniform, so periodic patterns in the data cannot bias which gaps are kept.
+        val deltas = DoubleArray(MAX_DELTAS)
+        var seen = 0L
+        val rng = java.util.Random(0x5EED)
+        for (i in 0 until time.size - 1) {
             val d = time[i + 1] - time[i]
-            if (d > 0.0)
-                deltas[n++] = d
-            i += stride
+            if (d <= 0.0)
+                continue
+            if (seen < MAX_DELTAS)
+                deltas[seen.toInt()] = d
+            else {
+                val slot = (rng.nextDouble() * (seen + 1)).toLong()
+                if (slot < MAX_DELTAS)
+                    deltas[slot.toInt()] = d
+            }
+            seen++
         }
-        if (n == 0)
+        if (seen == 0L)
             return 0.0
 
+        val n = minOf(seen, MAX_DELTAS.toLong()).toInt()
         val sorted = deltas.copyOf(n).also { it.sort() }
         return 1.0 / sorted[n / 2]
+    }
+
+    /**
+     * Longest leading prefix of `time` whose resampled length fits `maxSamples`.
+     * Dropping the tail changes the median rate, so the check is repeated on the
+     * retained prefix until it holds.
+     */
+    fun analyzablePrefix(time: DoubleArray, maxSamples: Long): Int {
+        var n = time.size
+        while (n >= 2) {
+            val prefix = if (n == time.size) time else time.copyOf(n)
+            val fs = estimateSampleRate(prefix)
+            if (fs <= 0 || resampledLength(prefix, fs) <= maxSamples)
+                return n
+            val maxSpan = (maxSamples - 1) / fs
+            var m = n
+            while (m > 0 && prefix[m - 1] - prefix[0] > maxSpan)
+                m--
+            // Always make progress, even if the span test alone would not shrink the prefix.
+            n = minOf(m, n - 1)
+        }
+        return n
     }
 
     fun resample(time: DoubleArray, values: DoubleArray, sampleRate: Double): DoubleArray {

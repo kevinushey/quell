@@ -72,6 +72,32 @@ class AnalysisEdgeCaseTest {
     }
 
     @Test
+    fun repeatedTimestampsDoNotHideTheRate() {
+        // Every other timestamp repeats; a fixed stride of 2 would see only zero gaps.
+        val time = DoubleArray(160_001) { (it / 2) / 400.0 }
+        assertEquals(400.0, Resampler.estimateSampleRate(time), 1e-6)
+    }
+
+    @Test
+    fun analyzablePrefixRevalidatesAfterTruncation() {
+        // A huge startup gap, then a fast burst, then a slow tail: cutting the tail raises the median rate.
+        val time = ArrayList<Double>()
+        time.add(0.0)
+        var t = 19_999.92
+        for (i in 0 until 21) { time.add(t); t += 1.0 / 400 }
+        for (i in 0 until 40) { time.add(t); t += 1.0 / 200 }
+        val arr = time.toDoubleArray()
+        val max = 4_000_000L
+        val kept = Resampler.analyzablePrefix(arr, max)
+        val prefix = arr.copyOf(kept)
+        assertTrue(kept < arr.size)
+        assertTrue(kept < 2 || Resampler.resampledLength(prefix, Resampler.estimateSampleRate(prefix)) <= max)
+
+        val fine = DoubleArray(1000) { it / 400.0 }
+        assertEquals(1000, Resampler.analyzablePrefix(fine, max))
+    }
+
+    @Test
     fun sampleRateEstimateSurvivesSubsampling() {
         val n = 300_000
         val time = DoubleArray(n) { it / 400.0 + if (it % 7 == 0) 0.0003 else 0.0 }

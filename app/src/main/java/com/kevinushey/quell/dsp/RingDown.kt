@@ -34,8 +34,12 @@ object RingDown {
     fun detectImpulse(signal: DoubleArray, threshold: Double): Int {
         if (signal.size < 8)
             return -1
-        val mean = signal.average()
-        for (i in signal.indices)
+        return detectImpulse(signal, threshold, 0, signal.average())
+    }
+
+    /** Index of the first sample at or after `from` deviating from `mean` by more than `threshold`, or -1. */
+    fun detectImpulse(signal: DoubleArray, threshold: Double, from: Int, mean: Double): Int {
+        for (i in from until signal.size)
             if (abs(signal[i] - mean) > threshold)
                 return i
         return -1
