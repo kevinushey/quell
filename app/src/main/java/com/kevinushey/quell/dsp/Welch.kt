@@ -3,6 +3,61 @@ package com.kevinushey.quell.dsp
 /** Welch's averaged-periodogram power spectral density estimate. */
 object Welch {
 
+    /**
+     * Number of statistically independent segments that `segments` overlapping
+     * ones are worth. Overlapping segments share samples, so their periodograms
+     * correlate by the squared window autocorrelation at the segment step
+     * (Welch 1967), and the variance reduction falls short of 1/K.
+     */
+    fun effectiveSegments(segments: Int, segmentSize: Int, window: WindowType, overlap: Double): Double {
+        if (segments <= 1)
+            return segments.toDouble().coerceAtLeast(0.0)
+        val n = segmentSize
+        val step = (n * (1.0 - overlap)).toInt().coerceAtLeast(1)
+        val w = window.coefficients(n)
+        val energy = w.sumOf { it * it }
+
+        var sum = 0.0
+        var m = 1
+        while (m < segments && m * step < n) {
+            val d = m * step
+            var c = 0.0
+            for (i in 0 until n - d)
+                c += w[i] * w[i + d]
+            val rho = c / energy
+            sum += (1.0 - m.toDouble() / segments) * rho * rho
+            m++
+        }
+        return segments / (1.0 + 2.0 * sum)
+    }
+
+    /**
+     * Independent values that a `bins`-wide moving average over adjacent PSD
+     * bins is worth. Windowing correlates neighbouring bins (for Hann, about
+     * 0.44 for adjacent bins), so smoothing buys less than one per bin.
+     */
+    fun effectiveSmoothingBins(bins: Int, segmentSize: Int, window: WindowType): Double {
+        if (bins <= 1)
+            return 1.0
+        val n = segmentSize
+        val w2 = window.coefficients(n).map { it * it }
+        val energy = w2.sum()
+
+        var sum = 0.0
+        for (k in 1 until bins) {
+            var re = 0.0
+            var im = 0.0
+            for (i in 0 until n) {
+                val phase = 2.0 * Math.PI * k * i / n
+                re += w2[i] * Math.cos(phase)
+                im += w2[i] * Math.sin(phase)
+            }
+            val c = (re * re + im * im) / (energy * energy)
+            sum += (1.0 - k.toDouble() / bins) * c
+        }
+        return bins / (1.0 + 2.0 * sum)
+    }
+
     fun psd(
         signal: DoubleArray,
         sampleRate: Double,

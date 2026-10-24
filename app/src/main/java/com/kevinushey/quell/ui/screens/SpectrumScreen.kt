@@ -99,7 +99,7 @@ fun SpectrumScreen(vm: MainViewModel, exportHost: ChartExportHost, onImport: () 
                         append(" Hz  |  ")
                         // Fewest averages across the visible runs bounds the comparison's uncertainty.
                         val worst = results.minByOrNull { it.effectiveAverages } ?: first
-                        append("${worst.effectiveAverages} avg, +/-")
+                        append("%.0f avg, +/-".format(Locale.US, worst.effectiveAverages))
                         append("%.1f".format(Locale.US, worst.randomErrorDb))
                         append(" dB  |  ${settings.window.label} ${(settings.overlap * 100).toInt()}%")
                     }

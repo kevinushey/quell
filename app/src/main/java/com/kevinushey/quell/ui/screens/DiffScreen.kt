@@ -60,12 +60,15 @@ fun DiffScreen(vm: MainViewModel, exportHost: ChartExportHost) {
         onDispose { exportHost.bounds = null }
     }
 
-    val results = state.results
+    // A run that could not be reference-band normalized is not on the same scale; keep it out.
+    val results = state.results.filter { !it.referenceBandMissing }
+    val excluded = state.results.filter { it.referenceBandMissing }
     if (results.size < 2) {
         EmptyState(
             icon = Icons.Default.Compare,
-            title = "Need two or more visible datasets",
-            message = "Enable at least two datasets on the Datasets tab. The diff view subtracts a reference run from each of the others, in dB, so a flat line at zero means identical spectra.",
+            title = "Need two or more comparable datasets",
+            message = "Enable at least two datasets on the Datasets tab. The diff view subtracts a reference run from each of the others, in dB, so a flat line at zero means identical spectra." +
+                if (excluded.isEmpty()) "" else "\n\nNot comparable (reference band not covered): ${excluded.joinToString { it.meta.name }}.",
         )
         return
     }
@@ -88,6 +91,14 @@ fun DiffScreen(vm: MainViewModel, exportHost: ChartExportHost) {
                 selected = reference.meta.id,
                 onSelect = { vm.setReference(it) },
                 optionLabel = { id -> results.first { it.meta.id == id }.meta.name },
+            )
+        }
+        if (excluded.isNotEmpty()) {
+            Text(
+                "Not comparable (reference band not covered): ${excluded.joinToString { it.meta.name }}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(horizontal = 12.dp),
             )
         }
 

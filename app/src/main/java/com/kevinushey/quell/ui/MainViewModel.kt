@@ -12,6 +12,7 @@ import com.kevinushey.quell.data.ImportException
 import com.kevinushey.quell.data.ParsedRun
 import com.kevinushey.quell.data.TimeSeries
 import com.kevinushey.quell.dsp.Spectrum
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -92,16 +93,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { repo.problems.collect { _messages.emit(it) } }
     }
 
+    /**
+     * Persistence can fail (storage full, index unwritable); report it instead
+     * of letting the exception reach the uncaught handler and kill the app.
+     */
+    private fun launchReporting(what: String, block: suspend () -> Unit) {
+        viewModelScope.launch {
+            try {
+                block()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _messages.tryEmit("Could not $what: ${e.message ?: e.javaClass.simpleName}")
+            }
+        }
+    }
+
     fun updateAnalysis(transform: (AnalysisSettings) -> AnalysisSettings) {
         val next = transform(_analysis.value)
         _analysis.value = next
-        viewModelScope.launch { settingsStore.saveAnalysis(next) }
+        launchReporting("save analysis settings") { settingsStore.saveAnalysis(next) }
     }
 
     fun updateAppSettings(transform: (AppSettings) -> AppSettings) {
         val next = transform(_appSettings.value)
         _appSettings.value = next
-        viewModelScope.launch { settingsStore.saveApp(next) }
+        launchReporting("save settings") { settingsStore.saveApp(next) }
     }
 
     fun importUris(uris: List<Uri>) {
@@ -160,21 +177,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setTrim(id: String, start: Double, end: Double) = updateMeta(id) { it.copy(trimStart = start.coerceAtLeast(0.0), trimEnd = end) }
 
     fun setAllVisible(visible: Boolean) {
-        viewModelScope.launch { repo.updateAll { it.copy(visible = visible) } }
+        launchReporting("update datasets") { repo.updateAll { it.copy(visible = visible) } }
     }
 
     fun soloVisible(id: String) {
-        viewModelScope.launch { repo.updateAll { it.copy(visible = it.id == id) } }
+        launchReporting("update datasets") { repo.updateAll { it.copy(visible = it.id == id) } }
     }
 
     fun move(id: String, delta: Int) {
-        viewModelScope.launch { repo.move(id, delta) }
+        launchReporting("reorder datasets") { repo.move(id, delta) }
     }
 
     fun setReference(id: String?) = updateAnalysis { it.copy(referenceId = id) }
 
     fun delete(id: String) {
-        viewModelScope.launch {
+        launchReporting("delete dataset") {
             repo.delete(id)
             cacheMutex.withLock {
                 resampledCache.keys.removeAll { it.id == id }
@@ -250,7 +267,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun updateMeta(id: String, transform: (DatasetMeta) -> DatasetMeta) {
-        val meta = datasets.value.firstOrNull { it.id == id } ?: return
-        viewModelScope.launch { repo.update(transform(meta)) }
+        launchReporting("update dataset") { repo.update(id, transform) }
     }
 }

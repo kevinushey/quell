@@ -61,6 +61,16 @@ class ParserTest {
     }
 
     @Test
+    fun badAxisCellSkipsRowInsteadOfSwitchingToMagnitude() {
+        val rows = (0 until 50).map { "${it * 0.01},0,0,9.81,9.81" }.toMutableList()
+        rows[7] = "0.07,,0,9.81,9.81"
+        val run = AccelerometerParser.parseCsvText("time,x,y,z,absolute\n" + rows.joinToString("\n"))
+        assertEquals(49, run.size)
+        assertTrue(run.x.all { it == 0.0 })
+        assertTrue(run.z.all { it == 9.81 })
+    }
+
+    @Test
     fun rejectsInconsistentTimestamps() {
         val rows = (0 until 50).map { "${it * 0.01},1,2,3" } + "1700000000.0,1,2,3"
         try {

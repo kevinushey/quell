@@ -8,7 +8,7 @@ package com.kevinushey.quell.dsp
 object Resampler {
 
     /** Upper bound on one resampled channel; beyond this the timestamps are almost certainly wrong. */
-    const val MAX_SAMPLES = 8_000_000L
+    const val MAX_SAMPLES = 4_000_000L
 
     /** Number of samples a uniform grid at `sampleRate` needs to span `time`, without overflow. */
     fun resampledLength(time: DoubleArray, sampleRate: Double): Long {

@@ -122,9 +122,12 @@ fun DamperScreen(vm: MainViewModel, exportHost: ChartExportHost) {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            val refCandidates = datasets.filter { it.visible }
+            // Only runs this tab actually compares can be the reference, and the label
+            // names the reference really in use, which may be a fallback.
+            val refCandidates = rows.map { it.result.meta } + tapMetas
+            val refLabel = listOfNotNull(driveRef?.result?.meta?.name, tapRef?.name).distinct().joinToString(" / ")
             MenuChip(
-                label = "Ref: ${(datasets.firstOrNull { it.id == settings.referenceId } ?: driveRef?.result?.meta ?: tapRef)?.name ?: "none"}",
+                label = "Ref: ${refLabel.ifEmpty { "none" }}",
                 options = refCandidates.map { it.id },
                 selected = settings.referenceId ?: "",
                 onSelect = { vm.setReference(it) },
@@ -179,10 +182,11 @@ fun DamperScreen(vm: MainViewModel, exportHost: ChartExportHost) {
                         }
                     }
                 }
-                if (driveRef != null && driveRef.peak != null && rows.size > 1) {
+                // Diagnoses need both runs on the same scale and covering the band (bandRms is NaN otherwise).
+                if (driveRef != null && driveRef.peak != null && !driveRef.bandRms.isNaN() && rows.size > 1) {
                     item { SectionTitle("Tuning diagnosis vs ${driveRef.result.meta.name}") }
                     for (r in rows) {
-                        if (r.result.meta.id == driveRef.result.meta.id)
+                        if (r.result.meta.id == driveRef.result.meta.id || r.bandRms.isNaN())
                             continue
                         val d = Tuning.diagnose(driveRef.peak, r.spectrum, lo, hi, r.split) ?: continue
                         item { DiagnosisCard(r, d) }

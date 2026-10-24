@@ -51,13 +51,16 @@ class SpectrumResult(
     /** Set when reference-band normalization was requested but this run does not cover the band. */
     val referenceBandMissing: Boolean = false,
 ) {
-    /** Welch segments times the bins actually combined by smoothing: what the random error depends on. */
-    val effectiveAverages: Int get() = raw.segments * maxOf(1, smoothingBinsApplied)
-    var smoothingBinsApplied: Int = 1
+    /**
+     * Independent averages behind the estimate: effective Welch segments (after
+     * overlap correlation) times effective smoothing bins (after window
+     * correlation). This is what the random error depends on.
+     */
+    var effectiveAverages: Double = raw.segments.toDouble().coerceAtLeast(1.0)
         internal set
 
     /** One-sigma random error of the PSD estimate in dB: 10*log10(e) / sqrt(n). */
-    val randomErrorDb: Double get() = if (effectiveAverages > 0) 4.343 / Math.sqrt(effectiveAverages.toDouble()) else Double.NaN
+    val randomErrorDb: Double get() = if (effectiveAverages > 0) 4.343 / Math.sqrt(effectiveAverages) else Double.NaN
 }
 
 data class PsdKey(
@@ -107,8 +110,11 @@ object AnalysisEngine {
         val span = (normalized.freq.lastOrNull() ?: 0.0) - (normalized.freq.firstOrNull() ?: 0.0)
         val separation = if (normalized.binWidth > 0) Math.ceil(0.02 * span / normalized.binWidth).toInt().coerceAtLeast(4) else 4
         val peaks = if (s.showPeaks) Peaks.find(normalized.freq, display, s.peakCount, minSeparationBins = separation) else emptyList()
+        val binsCombined = Spectrum.effectiveSmoothingBins(restricted.size, s.smoothingBins)
+        val averages = Welch.effectiveSegments(raw.segments, s.segmentSize, s.window, s.overlap) *
+            Welch.effectiveSmoothingBins(binsCombined, s.segmentSize, s.window)
         return SpectrumResult(meta, raw, normalized, display, peaks, sampleRate, refScale, refMissing)
-            .also { it.smoothingBinsApplied = Spectrum.effectiveSmoothingBins(restricted.size, s.smoothingBins) }
+            .also { it.effectiveAverages = averages.coerceAtLeast(1.0) }
     }
 
     fun yAxisLabel(s: AnalysisSettings): String = when {

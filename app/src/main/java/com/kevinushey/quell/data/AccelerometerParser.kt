@@ -50,11 +50,16 @@ object AccelerometerParser {
                     path.endsWith("meta/device.csv") -> device = parseKeyValueCsv(readAll(zip))
                     path.endsWith("meta/time.csv") -> recordedAt = parseStartTime(readAll(zip))
                     name.lowercase().endsWith(".csv") -> {
-                        // phyphox experiments can export several tables; prefer the one that looks like raw samples.
-                        val text = readAll(zip)
-                        val score = csvScore(name, text)
+                        // phyphox experiments can export several tables; prefer the one that looks
+                        // like raw samples. Score from the header alone and stream the rows, so a
+                        // large table never has to exist in memory as text.
+                        val reader = BufferedReader(InputStreamReader(zip, Charsets.UTF_8), 1 shl 16)
+                        reader.mark(1 shl 16)
+                        val header = reader.readLine() ?: ""
+                        reader.reset()
+                        val score = csvScore(name, header)
                         if (score > seriesScore) {
-                            runCatching { parseCsvText(text) }
+                            runCatching { parseCsvReader(reader) }
                                 .onFailure { lastError = it.message }
                                 .getOrNull()?.let {
                                     series = it
@@ -77,13 +82,14 @@ object AccelerometerParser {
         )
     }
 
-    fun parseCsv(input: InputStream): ParsedRun = ParsedRun(parseCsvText(readAll(input)))
+    fun parseCsv(input: InputStream): ParsedRun =
+        ParsedRun(parseCsvReader(BufferedReader(InputStreamReader(input, Charsets.UTF_8), 1 shl 16)))
 
-    private fun csvScore(name: String, text: String): Int {
+    private fun csvScore(name: String, headerLine: String): Int {
         var score = 0
         if (name.contains("raw", ignoreCase = true))
             score += 10
-        val header = text.lineSequence().firstOrNull()?.lowercase() ?: return -1
+        val header = headerLine.lowercase()
         if (header.contains("time"))
             score += 5
         if (header.contains("acceleration") || header.contains("accel"))
@@ -91,8 +97,10 @@ object AccelerometerParser {
         return score
     }
 
-    fun parseCsvText(text: String): TimeSeries {
-        val reader = BufferedReader(text.reader())
+    fun parseCsvText(text: String): TimeSeries = parseCsvReader(BufferedReader(text.reader()))
+
+    /** Rows are consumed as they are read; nothing beyond the sample arrays is held. */
+    fun parseCsvReader(reader: BufferedReader): TimeSeries {
         var headerLine: String? = null
         // Skip blank lines and comments ahead of the header.
         while (true) {
@@ -118,25 +126,28 @@ object AccelerometerParser {
         val x = DoubleList()
         val y = DoubleList()
         val z = DoubleList()
+        // The representation is fixed by the header: a bad axis cell in an XYZ file
+        // skips that row rather than switching it to magnitude-on-X.
+        val axes = layout.x != null && layout.y != null && layout.z != null
+
         fun consume(line: String) {
             val cells = splitLine(line, delimiter)
             if (cells.size <= layout.maxIndex)
                 return
             val t = finite(cells[layout.time]) ?: return
-            val vx = layout.x?.let { finite(cells[it]) }
-            val vy = layout.y?.let { finite(cells[it]) }
-            val vz = layout.z?.let { finite(cells[it]) }
-            val vm = layout.magnitude?.let { finite(cells[it]) }
-            when {
-                vx != null && vy != null && vz != null -> {
-                    time.add(t); x.add(vx); y.add(vy); z.add(vz)
-                }
-                vm != null -> {
-                    // Magnitude-only files: keep it on one axis so |a| and the summed
-                    // Total power still equal the supplied values.
-                    time.add(t); x.add(vm); y.add(0.0); z.add(0.0)
-                }
+            if (axes) {
+                val vx = finite(cells[layout.x!!]) ?: return
+                val vy = finite(cells[layout.y!!]) ?: return
+                val vz = finite(cells[layout.z!!]) ?: return
+                time.add(t); x.add(vx); y.add(vy); z.add(vz)
+            } else {
+                // Magnitude-only files: keep it on one axis so |a| and the summed
+                // Total power still equal the supplied values.
+                val vm = finite(cells[layout.magnitude!!]) ?: return
+                time.add(t); x.add(vm); y.add(0.0); z.add(0.0)
             }
+            if (time.size > MAX_ROWS)
+                throw ImportException("More than $MAX_ROWS samples; split the recording before importing")
         }
 
         if (!hasHeader)
@@ -282,6 +293,10 @@ object AccelerometerParser {
             ?.get(3)
     }
 
+    /** Only metadata tables are read whole; sample tables stream through [parseCsvReader]. */
+    private const val MAX_META_CHARS = 1 shl 20
+    private val MAX_ROWS = Resampler.MAX_SAMPLES.toInt()
+
     private fun readAll(stream: InputStream): String {
         // Do not close: for zip entries the caller owns the stream.
         val reader = InputStreamReader(stream, Charsets.UTF_8)
@@ -291,6 +306,8 @@ object AccelerometerParser {
             val n = reader.read(buf)
             if (n < 0)
                 break
+            if (sb.length + n > MAX_META_CHARS)
+                throw ImportException("Metadata table is unexpectedly large")
             sb.appendRange(buf, 0, n)
         }
         return sb.toString()

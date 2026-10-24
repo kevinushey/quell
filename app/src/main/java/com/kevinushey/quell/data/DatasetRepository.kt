@@ -84,7 +84,8 @@ class DatasetRepository(private val context: Context) {
     suspend fun add(name: String, sourceName: String, parsed: ParsedRun): DatasetMeta = withContext(Dispatchers.IO) {
         val series = parsed.series
         val id = UUID.randomUUID().toString()
-        writeSeries(File(dir, "$id.bin"), series)
+        val file = File(dir, "$id.bin")
+        writeSeries(file, series)
 
         mutex.withLock {
             loadLocked()
@@ -103,9 +104,16 @@ class DatasetRepository(private val context: Context) {
                 extraFields = parsed.extraFields,
                 kind = parsed.kind,
             )
+            // Persist first: a failed write must leave neither a phantom entry nor an orphan file.
+            val next = _datasets.value + meta
+            try {
+                persistIndex(next)
+            } catch (e: Exception) {
+                file.delete()
+                throw e
+            }
             cache[id] = series
-            _datasets.value = _datasets.value + meta
-            persistIndex()
+            _datasets.value = next
             meta
         }
     }
@@ -121,10 +129,11 @@ class DatasetRepository(private val context: Context) {
         mutex.withLock { cache.getOrPut(id) { series } }
     }
 
-    suspend fun update(meta: DatasetMeta) = withContext(Dispatchers.IO) {
+    /** Applies `transform` to the latest metadata under the lock, so queued edits compose instead of clobbering. */
+    suspend fun update(id: String, transform: (DatasetMeta) -> DatasetMeta) = withContext(Dispatchers.IO) {
         mutex.withLock {
             loadLocked()
-            _datasets.value = _datasets.value.map { if (it.id == meta.id) meta else it }
+            _datasets.value = _datasets.value.map { if (it.id == id) transform(it) else it }
             persistIndex()
         }
     }
@@ -162,11 +171,11 @@ class DatasetRepository(private val context: Context) {
     }
 
     /** Write-to-temp-then-rename, so a crash mid-write leaves the previous index intact. */
-    private fun persistIndex() {
+    private fun persistIndex(list: List<DatasetMeta> = _datasets.value) {
         val atomic = AtomicFile(indexFile)
         val out = atomic.startWrite()
         try {
-            out.write(json.encodeToString(_datasets.value).toByteArray(Charsets.UTF_8))
+            out.write(json.encodeToString(list).toByteArray(Charsets.UTF_8))
             atomic.finishWrite(out)
         } catch (e: Exception) {
             atomic.failWrite(out)

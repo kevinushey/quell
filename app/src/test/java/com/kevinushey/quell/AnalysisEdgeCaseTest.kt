@@ -6,6 +6,7 @@ import com.kevinushey.quell.dsp.Spectrogram
 import com.kevinushey.quell.dsp.Spectrum
 import com.kevinushey.quell.dsp.SpectrumDiff
 import com.kevinushey.quell.dsp.Welch
+import com.kevinushey.quell.dsp.WindowType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -75,6 +76,23 @@ class AnalysisEdgeCaseTest {
         assertEquals(2, Spectrum.effectiveSmoothingBins(2, 15))
         assertTrue(Spectrum.effectiveSmoothingBins(1000, 15) in 14..15)
         assertEquals(1, Spectrum.effectiveSmoothingBins(1000, 1))
+    }
+
+    @Test
+    fun overlapAndWindowCorrelationReduceEffectiveAverages() {
+        val none = Welch.effectiveSegments(20, 1024, WindowType.HANN, 0.0)
+        val half = Welch.effectiveSegments(20, 1024, WindowType.HANN, 0.5)
+        val heavy = Welch.effectiveSegments(20, 1024, WindowType.HANN, 0.9)
+        assertEquals(20.0, none, 1e-9)
+        assertTrue(half < none && half > 0.9 * none)
+        assertTrue(heavy < half)
+        assertEquals(1.0, Welch.effectiveSegments(1, 1024, WindowType.HANN, 0.5), 0.0)
+
+        val bins = Welch.effectiveSmoothingBins(3, 1024, WindowType.HANN)
+        assertTrue("got $bins", bins > 1.0 && bins < 3.0)
+        assertEquals(1.0, Welch.effectiveSmoothingBins(1, 1024, WindowType.HANN), 0.0)
+        // A rectangular window leaves bins uncorrelated, so smoothing counts in full.
+        assertEquals(3.0, Welch.effectiveSmoothingBins(3, 1024, WindowType.RECTANGULAR), 1e-6)
     }
 
     @Test
