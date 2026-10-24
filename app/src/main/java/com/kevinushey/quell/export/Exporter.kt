@@ -45,20 +45,15 @@ object Exporter {
                 w.write("\n")
                 // Union of every run's bins, so no run's coverage depends on which dataset is listed first.
                 val grid = results.flatMap { it.normalized.freq.asList() }.distinct().sorted().toDoubleArray()
-                val aligned = results.map { r ->
-                    if (r.normalized.freq.contentEquals(grid)) r.display
-                    else {
-                        val s = com.kevinushey.quell.dsp.Spectrum(r.normalized.freq, r.display).onGrid(grid)
-                        s.power
-                    }
-                }
-                for (i in grid.indices) {
-                    w.write(grid[i].toString())
-                    for (col in aligned) {
+                // Interpolate each value as its row is written: nothing grid-sized is held per run.
+                val spectra = results.map { com.kevinushey.quell.dsp.Spectrum(it.normalized.freq, it.display) }
+                for (f in grid) {
+                    w.write(f.toString())
+                    for (s in spectra) {
                         w.write(",")
                         // Past a run's Nyquist there is no value; leave the cell empty.
-                        if (!col[i].isNaN())
-                            w.write(col[i].toString())
+                        if (s.supports(f))
+                            w.write(s.interpolate(f).toString())
                     }
                     w.write("\n")
                 }

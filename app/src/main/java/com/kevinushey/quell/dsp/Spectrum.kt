@@ -9,6 +9,9 @@ class Spectrum(
     val windowLength: Int = 0,
     /** Bin spacing to keep when fewer than two bins remain (restriction to one bin must not lose it). */
     spacing: Double = 0.0,
+    /** Centre of the physical DC / Nyquist bin of the spectrum this one derives from (defaults to its own ends). */
+    edgeMin: Double = Double.NaN,
+    edgeMax: Double = Double.NaN,
 ) {
     init {
         require(freq.size == power.size)
@@ -16,10 +19,12 @@ class Spectrum(
 
     val size: Int get() = freq.size
     val binWidth: Double = if (freq.size > 1) freq[1] - freq[0] else spacing
+    val physicalMin: Double = if (edgeMin.isNaN()) (freq.firstOrNull() ?: 0.0) else edgeMin
+    val physicalMax: Double = if (edgeMax.isNaN()) (freq.lastOrNull() ?: 0.0) else edgeMax
     val maxFreq: Double get() = freq.lastOrNull() ?: 0.0
 
     fun map(transform: (Int, Double) -> Double): Spectrum =
-        Spectrum(freq, DoubleArray(size) { transform(it, power[it]) }, segments, windowLength, binWidth)
+        Spectrum(freq, DoubleArray(size) { transform(it, power[it]) }, segments, windowLength, binWidth, physicalMin, physicalMax)
 
     /** Linear interpolation of `power` at frequency f (clamped at the ends). */
     fun interpolate(f: Double): Double {
@@ -49,7 +54,7 @@ class Spectrum(
      * repeated endpoint, so comparisons cannot fabricate differences there.
      */
     fun onGrid(grid: DoubleArray): Spectrum =
-        Spectrum(grid, DoubleArray(grid.size) { if (supports(grid[it])) interpolate(grid[it]) else Double.NaN }, segments, windowLength, binWidth)
+        Spectrum(grid, DoubleArray(grid.size) { if (supports(grid[it])) interpolate(grid[it]) else Double.NaN }, segments, windowLength, binWidth, physicalMin, physicalMax)
 
     fun supports(f: Double): Boolean = size > 0 && f >= freq[0] && f <= freq[size - 1]
 
@@ -59,7 +64,7 @@ class Spectrum(
 
     fun restrictTo(minFreq: Double, maxFreq: Double): Spectrum {
         val idx = freq.indices.filter { freq[it] in minFreq..maxFreq }
-        return Spectrum(DoubleArray(idx.size) { freq[idx[it]] }, DoubleArray(idx.size) { power[idx[it]] }, segments, windowLength, binWidth)
+        return Spectrum(DoubleArray(idx.size) { freq[idx[it]] }, DoubleArray(idx.size) { power[idx[it]] }, segments, windowLength, binWidth, physicalMin, physicalMax)
     }
 
     /**
@@ -70,8 +75,11 @@ class Spectrum(
      */
     private fun overlap(i: Int, lo: Double, hi: Double): Double {
         val half = binWidth / 2
-        val bandLo = if (lo <= freq[0]) freq[0] - half else lo
-        val bandHi = if (hi >= freq[size - 1]) freq[size - 1] + half else hi
+        // Only the true DC and Nyquist bins get the extension; a cropped spectrum's first bin is an ordinary bin.
+        val atDc = lo <= freq[0] && freq[0] <= physicalMin + 1e-9 * (1 + physicalMin)
+        val atNyquist = hi >= freq[size - 1] && freq[size - 1] >= physicalMax - 1e-9 * (1 + physicalMax)
+        val bandLo = if (atDc) freq[0] - half else lo
+        val bandHi = if (atNyquist) freq[size - 1] + half else hi
         return (minOf(bandHi, freq[i] + half) - maxOf(bandLo, freq[i] - half)).coerceAtLeast(0.0)
     }
 
@@ -141,6 +149,6 @@ class Spectrum(
                 sum += power[k]
             out[i] = sum / (b - a + 1)
         }
-        return Spectrum(freq, out, segments, windowLength, binWidth)
+        return Spectrum(freq, out, segments, windowLength, binWidth, physicalMin, physicalMax)
     }
 }

@@ -51,7 +51,8 @@ enum class Normalization(val label: String, val description: String) {
                 val db = DoubleArray(s.size) { toDb(s.power[it]) }
                 val mean = db.average()
                 val sd = sqrt(db.sumOf { (it - mean) * (it - mean) } / db.size)
-                if (sd > 0) Spectrum(s.freq, DoubleArray(s.size) { (db[it] - mean) / sd }, s.segments) else Spectrum(s.freq, DoubleArray(s.size), s.segments)
+                val z = if (sd > 0) DoubleArray(s.size) { (db[it] - mean) / sd } else DoubleArray(s.size)
+                Spectrum(s.freq, z, s.segments, s.windowLength, s.binWidth, s.physicalMin, s.physicalMax)
             }
         }
     }

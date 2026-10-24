@@ -53,34 +53,84 @@ object Resampler {
 
     /**
      * Longest leading prefix of `time` whose resampled length fits `maxSamples`.
-     * Dropping the tail changes the median rate, so the check is repeated on the
-     * retained prefix until it holds.
+     * Every prefix is judged by its own median gap: a Fenwick tree over the
+     * ranks of the positive gaps yields the running median in O(log n), so the
+     * whole scan is O(n log n) and no candidate is skipped.
      */
     fun analyzablePrefix(time: DoubleArray, maxSamples: Long): Int {
-        var n = time.size
-        while (n >= 2) {
-            val prefix = if (n == time.size) time else time.copyOf(n)
-            val fs = estimateSampleRate(prefix)
-            if (fs <= 0 || resampledLength(prefix, fs) <= maxSamples)
-                return n
-            // Dropping a fast tail can lower the median rate enough that a slightly shorter
-            // prefix fits; probe those before cutting all the way back by span.
-            for (probe in intArrayOf(n - 1, n - maxOf(2, n / 16))) {
-                if (probe < 2)
-                    continue
-                val candidate = time.copyOf(probe)
-                val pfs = estimateSampleRate(candidate)
-                if (pfs <= 0 || resampledLength(candidate, pfs) <= maxSamples)
-                    return probe
+        val n = time.size
+        if (n < 2)
+            return n
+        val fs = estimateSampleRate(time)
+        if (fs <= 0 || resampledLength(time, fs) <= maxSamples)
+            return n
+
+        val gaps = DoubleArray(n - 1) { time[it + 1] - time[it] }
+        var positive = 0
+        for (d in gaps)
+            if (d > 0)
+                positive++
+        if (positive == 0)
+            return n
+        val sortedPositive = DoubleArray(positive)
+        var w = 0
+        for (d in gaps)
+            if (d > 0)
+                sortedPositive[w++] = d
+        sortedPositive.sort()
+
+        val tree = IntArray(positive + 1)
+        fun add(rank: Int) {
+            var i = rank + 1
+            while (i <= positive) {
+                tree[i]++
+                i += i and -i
             }
-            val maxSpan = (maxSamples - 1) / fs
-            var m = n
-            while (m > 0 && prefix[m - 1] - prefix[0] > maxSpan)
-                m--
-            // Always make progress, even if the span test alone would not shrink the prefix.
-            n = minOf(m, n - 1)
         }
-        return n
+        fun kthRank(k: Int): Int {
+            var pos = 0
+            var remaining = k
+            var step = Integer.highestOneBit(positive)
+            while (step > 0) {
+                val next = pos + step
+                if (next <= positive && tree[next] < remaining) {
+                    pos = next
+                    remaining -= tree[next]
+                }
+                step = step shr 1
+            }
+            return pos
+        }
+
+        var best = 1
+        var inserted = 0
+        for (i in gaps.indices) {
+            val d = gaps[i]
+            if (d > 0) {
+                add(java.util.Arrays.binarySearch(sortedPositive, d))
+                inserted++
+            }
+            val prefixLength = i + 2
+            if (inserted == 0) {
+                best = prefixLength
+                continue
+            }
+            val median = sortedPositive[kthRank(inserted / 2 + 1)]
+            val length = Math.rint((time[i + 1] - time[0]) / median) + 1.0
+            if (length <= maxSamples)
+                best = prefixLength
+        }
+
+        // estimateSampleRate subsamples very long inputs, so confirm with it and back off a little if needed.
+        var k = best
+        while (k >= 2) {
+            val prefix = time.copyOf(k)
+            val pfs = estimateSampleRate(prefix)
+            if (pfs <= 0 || resampledLength(prefix, pfs) <= maxSamples)
+                return k
+            k -= maxOf(1, k / 100)
+        }
+        return k.coerceAtLeast(1)
     }
 
     fun resample(time: DoubleArray, values: DoubleArray, sampleRate: Double): DoubleArray {

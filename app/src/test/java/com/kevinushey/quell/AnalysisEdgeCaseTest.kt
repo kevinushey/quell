@@ -73,23 +73,33 @@ class AnalysisEdgeCaseTest {
 
     @Test
     fun resampledRefusesWindowsBeyondTheBudget() {
-        // 100 s at 400 Hz, a long gap, then a slow tail: the median rate stays 400 Hz over a 10,800 s span.
+        // 100 s at 400 Hz, a 20,000 s gap, then a slow tail: about 8M samples at the 400 Hz median,
+        // beyond the hard cap on every device, so the rejection is asserted unconditionally.
         val time = ArrayList<Double>()
         var t = 0.0
         for (i in 0 until 40_000) { time.add(t); t += 1.0 / 400 }
-        t += 9_700.0
+        t += 20_000.0
         for (i in 0 until 2_000) { time.add(t); t += 1.0 / 50 }
         val arr = time.toDoubleArray()
         val series = com.kevinushey.quell.data.TimeSeries(arr, DoubleArray(arr.size), DoubleArray(arr.size), DoubleArray(arr.size))
-        val needed = Resampler.resampledLength(arr, Resampler.estimateSampleRate(arr))
-        if (needed > com.kevinushey.quell.data.MemoryBudget.maxSamples()) {
-            try {
-                com.kevinushey.quell.ui.Resampled.from(series)
-                fail("expected IllegalArgumentException")
-            } catch (e: IllegalArgumentException) {
-                assertTrue(e.message!!.contains("Trim"))
-            }
+        assertTrue(Resampler.resampledLength(arr, Resampler.estimateSampleRate(arr)) > Resampler.MAX_SAMPLES)
+        try {
+            com.kevinushey.quell.ui.Resampled.from(series)
+            fail("expected IllegalArgumentException")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message!!.contains("Trim"))
         }
+    }
+
+    @Test
+    fun croppedSpectrumEdgesAreOrdinaryBins() {
+        val full = Spectrum(DoubleArray(201) { it.toDouble() }, DoubleArray(201) { 1.0 })
+        assertEquals(sqrt(201.0), full.bandRms(0.0, 200.0), 1e-9)
+        val cropped = full.restrictTo(10.0, 20.0)
+        assertEquals(sqrt(10.0), cropped.bandRms(10.0, 20.0), 1e-9)
+        assertEquals(sqrt(10.0), cropped.smoothed(3).bandRms(10.0, 20.0), 1e-9)
+        // Cropping that keeps the DC bin keeps its full width.
+        assertEquals(sqrt(20.5), full.restrictTo(0.0, 20.0).bandRms(0.0, 20.0), 1e-9)
     }
 
     @Test
@@ -147,6 +157,17 @@ class AnalysisEdgeCaseTest {
         for (i in 0 until 22) { mixed.add(u); u += 0.0025 }
         val keptMixed = Resampler.analyzablePrefix(mixed.toDoubleArray(), max)
         assertTrue("kept only $keptMixed", keptMixed >= 42)
+
+        // A longer fast tail: the full-capture median is 400 Hz, but the first 42 samples fit at 200 Hz.
+        val longer = ArrayList<Double>()
+        longer.add(0.0)
+        var v = 10_001.0
+        for (i in 0 until 20) { longer.add(v); v += 0.005 }
+        for (i in 0 until 30) { longer.add(v); v += 0.0025 }
+        val keptLonger = Resampler.analyzablePrefix(longer.toDoubleArray(), max)
+        assertTrue("kept only $keptLonger", keptLonger >= 42)
+        val keptPrefix = longer.toDoubleArray().copyOf(keptLonger)
+        assertTrue(Resampler.resampledLength(keptPrefix, Resampler.estimateSampleRate(keptPrefix)) <= max)
     }
 
     @Test

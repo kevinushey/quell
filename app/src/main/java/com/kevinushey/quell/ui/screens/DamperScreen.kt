@@ -105,10 +105,14 @@ fun DamperScreen(vm: MainViewModel, exportHost: ChartExportHost) {
     }
     val driveRef = rows.firstOrNull { it.result.meta.id == settings.referenceId } ?: rows.firstOrNull()
 
-    val tapSummaries by produceState<Map<String, TapSummary>>(emptyMap(), tapMetas.map { Triple(it.id, it.trimStart, it.trimEnd) }, settings.tapThreshold) {
-        val out = LinkedHashMap<String, TapSummary>()
-        for (m in tapMetas)
-            vm.tapSummary(m, settings.tapThreshold)?.let { out[m.id] = it }
+    // null while computing; afterwards every tap run has a Result, so a failure is never mistaken for "still running".
+    val tapSummaries by produceState<Map<String, Result<TapSummary>>?>(null, tapMetas.map { Triple(it.id, it.trimStart, it.trimEnd) }, settings.tapThreshold) {
+        value = null
+        val out = LinkedHashMap<String, Result<TapSummary>>()
+        for (m in tapMetas) {
+            val s = vm.tapSummary(m, settings.tapThreshold)
+            out[m.id] = if (s != null) Result.success(s) else Result.failure(IllegalStateException("analysis failed"))
+        }
         value = out
     }
     val tapRef = tapMetas.firstOrNull { it.id == settings.referenceId } ?: tapMetas.firstOrNull()
@@ -259,10 +263,11 @@ fun DamperScreen(vm: MainViewModel, exportHost: ChartExportHost) {
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(10.dp)) {
                             HeaderRow(listOf("Run", "Taps", "fn", "zeta", "vs ref"))
-                            val refSummary = tapRef?.let { tapSummaries[it.id] }
+                            val refSummary = tapRef?.let { tapSummaries?.get(it.id)?.getOrNull() }
                             for (m in tapMetas) {
-                                val s = tapSummaries[m.id]
-                                TapTableRow(m, s, refSummary, isRef = m.id == tapRef?.id)
+                                val state = tapSummaries?.get(m.id)
+                                val s = state?.getOrNull()
+                                TapTableRow(m, s, loading = tapSummaries == null, failed = state?.isFailure == true, ref = refSummary, isRef = m.id == tapRef?.id)
                                 if (s != null && s.beatingTaps > 0) {
                                     val (f1, f2) = s.beatFrequencies!!
                                     Text(
@@ -399,7 +404,7 @@ private fun DriveTableRow(r: DriveRow, ref: DriveRow?, settings: AnalysisSetting
 }
 
 @Composable
-private fun TapTableRow(m: DatasetMeta, s: TapSummary?, ref: TapSummary?, isRef: Boolean) {
+private fun TapTableRow(m: DatasetMeta, s: TapSummary?, loading: Boolean, failed: Boolean, ref: TapSummary?, isRef: Boolean) {
     Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(
             (if (isRef) "* " else "") + m.name,
@@ -411,7 +416,12 @@ private fun TapTableRow(m: DatasetMeta, s: TapSummary?, ref: TapSummary?, isRef:
             modifier = Modifier.weight(COLUMN_WEIGHTS[0]),
         )
         if (s == null) {
-            Text("...", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(COLUMN_WEIGHTS[1] + COLUMN_WEIGHTS[2] + COLUMN_WEIGHTS[3] + COLUMN_WEIGHTS[4]))
+            Text(
+                if (loading || !failed) "..." else "n/a: could not analyze; adjust the trim window",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(COLUMN_WEIGHTS[1] + COLUMN_WEIGHTS[2] + COLUMN_WEIGHTS[3] + COLUMN_WEIGHTS[4]),
+            )
             return@Row
         }
         Text(s.count.toString(), style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(COLUMN_WEIGHTS[1]))
