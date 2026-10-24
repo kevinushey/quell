@@ -1,5 +1,7 @@
 package com.kevinushey.quell.sync
 
+import com.kevinushey.quell.data.DatasetMeta
+import com.kevinushey.quell.data.Sweep
 import kotlinx.serialization.Serializable
 
 /** What the mirror folder already holds, as written by this app. */
@@ -12,6 +14,9 @@ data class SyncState(
     /** Content fingerprints of the last index.json and sweeps.json written. */
     val indexHash: String? = null,
     val sweepsHash: String? = null,
+    /** Fingerprints of an undecodable index.json / sweeps.json seen on the previous pass; seen twice, it is set aside. */
+    val badIndexHash: String? = null,
+    val badSweepsHash: String? = null,
 )
 
 /** A file in the mirror folder: its size when the provider reports one, else -1. */
@@ -32,6 +37,23 @@ class SyncPlan(
     val isEmpty: Boolean get() = binsToWrite.isEmpty() && csvToWrite.isEmpty() && deletions.isEmpty() && !writeIndex && !writeSweeps
 
     companion object {
+        /**
+         * The folder's index is a union: this phone's entries, then every entry
+         * the folder already listed that is neither here nor deleted here. An
+         * entry whose .bin is missing from the folder is carried too; restore
+         * skips it and the status does not count it, but dropping it would
+         * forget a dataset that may still be on its way.
+         */
+        fun mergeIndex(local: List<DatasetMeta>, remote: List<DatasetMeta>, deletedIds: Set<String>): List<DatasetMeta> {
+            val localIds = local.map { it.id }.toSet()
+            return local + remote.filter { it.id !in localIds && it.id !in deletedIds }
+        }
+
+        fun mergeSweeps(local: List<Sweep>, remote: List<Sweep>, deletedIds: Set<String>): List<Sweep> {
+            val localIds = local.map { it.id }.toSet()
+            return local + remote.filter { it.id !in localIds && it.id !in deletedIds }
+        }
+
         /**
          * The folder's index may only lose entries the user deleted here. Any
          * other shrink means our picture of the folder is wrong (an unreadable

@@ -34,6 +34,7 @@ import java.security.MessageDigest
 data class SyncStatus(
     val folderName: String? = null,
     val syncing: Boolean = false,
+    val restoring: Boolean = false,
     val lastSyncEpochMs: Long? = null,
     val mirroredCount: Int = 0,
     val lastError: String? = null,
@@ -79,7 +80,8 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             repo.load()
             // Only the sync fields matter here; an analysis-settings edit must not schedule a pass.
             val syncSettings = settings.app.map { Triple(it.syncTreeUri, it.syncEnabled, it.syncCsv) }.distinctUntilChanged()
-            combine(repo.datasets, repo.sweeps, repo.deletedIds, syncSettings) { _, _, _, s -> s }
+            // Deletions change datasets or sweeps too, so deletedIds need not be an input of its own.
+            combine(repo.datasets, repo.sweeps, syncSettings) { _, _, s -> s }
                 .debounce(3_000)
                 .collect { (treeUri, enabled, csv) ->
                     val tree = treeUri?.takeIf { enabled } ?: run {
@@ -159,20 +161,32 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         val localIds = metas.map { it.id }.toSet()
 
         // The folder's index carries forward entries this phone does not have, unless they were deleted here.
-        val remoteIndex = remoteIndex(remote)
-        val carried = remoteIndex.filter { it.id !in localIds && it.id !in deleted && "${it.id}.bin" in remote }
-        val mergedIndex = metas + carried
-        val remoteSweeps = remoteSweeps(remote)
-        val localSweepIds = repo.sweeps.value.map { it.id }.toSet()
-        val mergedSweeps = repo.sweeps.value + remoteSweeps.filter { it.id !in localSweepIds && it.id !in deleted }
+        // A damaged index or sweep list is set aside once it has been seen damaged twice (so a neighbour's
+        // write in progress is not mistaken for damage); until then the pass stops before writing anything.
+        val index = readRemoteIndex(remote)
+        val sweepsRead = readRemoteSweeps(remote)
+        var badIndexHash: String? = null
+        var badSweepsHash: String? = null
+        val remoteIndex: List<DatasetMeta> = index.items ?: run {
+            badIndexHash = index.badHash
+            if (state.badIndexHash == index.badHash && setAside(remote, "index.json")) emptyList()
+            else throw IllegalStateException("The folder's index.json is damaged (not valid JSON); nothing was written. It is set aside on the next pass.")
+        }
+        val remoteSweeps: List<Sweep> = sweepsRead.items ?: run {
+            badSweepsHash = sweepsRead.badHash
+            if (state.badSweepsHash == sweepsRead.badHash && setAside(remote, "sweeps.json")) emptyList()
+            else throw IllegalStateException("The folder's sweeps.json is damaged (not valid JSON); nothing was written. It is set aside on the next pass.")
+        }
+        val mergedIndex = SyncPlan.mergeIndex(metas, remoteIndex, deleted)
+        val mergedSweeps = SyncPlan.mergeSweeps(repo.sweeps.value, remoteSweeps, deleted)
         val indexBytes = DatasetRepository.indexJson.encodeToString(mergedIndex).toByteArray(Charsets.UTF_8)
         val sweepsBytes = DatasetRepository.indexJson.encodeToString(mergedSweeps).toByteArray(Charsets.UTF_8)
         val indexHash = sha1(indexBytes)
         val sweepsHash = sha1(sweepsBytes)
 
         // Belt and braces: a merged index can only be shorter than the folder's by what was deleted here.
-        if (!SyncPlan.indexWriteIsSafe(mergedIndex.map { it.id }, remoteIndex.map { it.id }, deleted))
-            throw IllegalStateException("The folder's index lists datasets this pass cannot account for; nothing was written")
+        // Should it ever fail, bins and deletions still proceed; only the index writes are withheld.
+        val indexWriteSafe = SyncPlan.indexWriteIsSafe(mergedIndex.map { it.id }, remoteIndex.map { it.id }, deleted)
 
         val localSizes = metas.associate { it.id to repo.datasetFile(it.id).length() }
         val plan = SyncPlan.plan(
@@ -228,9 +242,9 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             csvNames.remove(id)
         // Deleted datasets with nothing left in the folder need no more remembering either.
         val settled = deleted.filter { id -> id in released || ("$id.bin" !in remote && state.csvNames[id]?.let { it in remote } != true) }
-        if (plan.writeIndex)
+        if (plan.writeIndex && indexWriteSafe)
             writeDocument(tree, remote, "index.json", "application/json") { it.write(indexBytes) }
-        if (plan.writeSweeps)
+        if (plan.writeSweeps && indexWriteSafe)
             writeDocument(tree, remote, "sweeps.json", "application/json") { it.write(sweepsBytes) }
 
         // Every local dataset with a complete remote .bin counts as mirrored, whoever wrote it.
@@ -239,46 +253,66 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             if (meta.id in plan.binsToWrite || (r != null && (r.size < 0 || r.size == localSizes[meta.id])))
                 mirrored.add(meta.id)
         }
-        saveState(SyncState(mirrored, csvNames, indexHash, sweepsHash))
+        saveState(
+            SyncState(
+                mirrored,
+                csvNames,
+                if (indexWriteSafe) indexHash else state.indexHash,
+                if (indexWriteSafe) sweepsHash else state.sweepsHash,
+                badIndexHash,
+                badSweepsHash,
+            )
+        )
         if (settled.isNotEmpty())
             repo.forgetDeleted(settled.toSet())
+        if (!indexWriteSafe)
+            throw IllegalStateException("The folder's index lists datasets this pass cannot account for; files were mirrored but the index was left alone")
         return MirrorOutcome(metas.count { it.id in mirrored }, plan.notOnThisPhone.size)
     }
 
+    /** Renames a damaged folder file out of the way, as the local store does with its own index. */
+    private fun setAside(remote: MutableMap<String, Child>, name: String): Boolean {
+        val child = remote[name] ?: return true
+        val kept = name.replace(".json", ".broken-${System.currentTimeMillis()}.json")
+        val renamed = runCatching { DocumentsContract.renameDocument(context.contentResolver, child.uri, kept) }.getOrNull() ?: return false
+        remote.remove(name)
+        remote[kept] = Child(renamed, child.size)
+        return true
+    }
+
+    /** A folder JSON file: its decoded items, or null items plus the fingerprint of the bytes that would not decode. */
+    private class RemoteList<T>(val items: List<T>?, val badHash: String?)
+
     /**
-     * The folder's own index: empty only when the folder has none. A file
-     * that is there but cannot be read or decoded right now (provider
-     * offline, content not yet downloaded, a write cut short) throws, so the
-     * pass stops before it can write an index that forgets those entries.
-     * Only UUID-shaped ids are trusted.
+     * The folder's own index: empty only when the folder has none. A file that
+     * is there but cannot be read right now (provider offline, content not yet
+     * downloaded) throws, so the pass stops before it can write an index that
+     * forgets those entries; one that reads but does not decode is reported
+     * as damaged for the caller to decide. Only UUID-shaped ids are trusted.
      */
-    private fun remoteIndex(remote: Map<String, Child>): List<DatasetMeta> {
-        val uri = remote["index.json"]?.uri ?: return emptyList()
-        val text = readText(uri, "index.json")
-        return try {
-            DatasetRepository.indexJson.decodeFromString<List<DatasetMeta>>(DatasetRepository.migrateIndex(text)).filter { ID_SHAPE.matches(it.id) }
-        } catch (e: Exception) {
-            throw IllegalStateException("The folder's index.json could not be decoded; nothing was written. It will be retried.", e)
-        }
+    private fun readRemoteIndex(remote: Map<String, Child>): RemoteList<DatasetMeta> {
+        val uri = remote["index.json"]?.uri ?: return RemoteList(emptyList(), null)
+        val bytes = readBytes(uri, "index.json")
+        return runCatching {
+            DatasetRepository.indexJson.decodeFromString<List<DatasetMeta>>(DatasetRepository.migrateIndex(String(bytes, Charsets.UTF_8))).filter { ID_SHAPE.matches(it.id) }
+        }.fold({ RemoteList(it, null) }, { RemoteList(null, sha1(bytes)) })
     }
 
-    private fun remoteSweeps(remote: Map<String, Child>): List<Sweep> {
-        val uri = remote["sweeps.json"]?.uri ?: return emptyList()
-        val text = readText(uri, "sweeps.json")
-        return try {
-            DatasetRepository.indexJson.decodeFromString<List<Sweep>>(text).filter { ID_SHAPE.matches(it.id) }
-        } catch (e: Exception) {
-            throw IllegalStateException("The folder's sweeps.json could not be decoded; nothing was written. It will be retried.", e)
-        }
+    private fun readRemoteSweeps(remote: Map<String, Child>): RemoteList<Sweep> {
+        val uri = remote["sweeps.json"]?.uri ?: return RemoteList(emptyList(), null)
+        val bytes = readBytes(uri, "sweeps.json")
+        return runCatching {
+            DatasetRepository.indexJson.decodeFromString<List<Sweep>>(String(bytes, Charsets.UTF_8)).filter { ID_SHAPE.matches(it.id) }
+        }.fold({ RemoteList(it, null) }, { RemoteList(null, sha1(bytes)) })
     }
 
-    private fun readText(uri: Uri, name: String): String {
+    private fun readBytes(uri: Uri, name: String): ByteArray {
         val stream = try {
             context.contentResolver.openInputStream(uri)
         } catch (e: Exception) {
             throw IllegalStateException("The folder's $name could not be read right now; it will be retried.", e)
         } ?: throw IllegalStateException("The folder's $name could not be read right now; it will be retried.")
-        return stream.use { String(it.readBytes(), Charsets.UTF_8) }
+        return stream.use { it.readBytes() }
     }
 
     private companion object {
@@ -295,15 +329,30 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
      */
     suspend fun restore(tree: Uri): RestoreResult = withContext(Dispatchers.IO) {
         mutex.withLock {
+            _status.value = _status.value.copy(restoring = true)
+            try {
+                restoreLocked(tree)
+            } finally {
+                _status.value = _status.value.copy(restoring = false)
+            }
+        }
+    }
+
+    private suspend fun restoreLocked(tree: Uri): RestoreResult {
             val remote = listChildren(tree)
             if ("index.json" !in remote)
                 throw IllegalStateException("No index.json in that folder")
-            val metas = remoteIndex(remote)
-            val sweeps = remoteSweeps(remote)
+            val metas = readRemoteIndex(remote).items
+                ?: throw IllegalStateException("The folder's index.json is damaged (not valid JSON). Mirroring sets it aside; the datasets' files are still in the folder.")
+            // A damaged sweep list must not stand between the user and their datasets.
+            val sweepsRead = readRemoteSweeps(remote)
+            val sweeps = sweepsRead.items ?: emptyList()
             val have = repo.datasets.value.map { it.id }.toSet()
             val deleted = repo.deletedIds.value
             val incoming = ArrayList<DatasetMeta>()
             val skipped = ArrayList<String>()
+            if (sweepsRead.items == null)
+                skipped.add("sweeps.json (damaged, sweeps not restored)")
             try {
                 for (meta in metas) {
                     if (meta.id in have || meta.id in deleted)
@@ -337,10 +386,12 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                         val state = loadState()
                         saveState(state.copy(mirrored = state.mirrored + incoming.map { it.id }))
                     }
+                    // A complete restore answers the lost-index warning; a partial one does not.
+                    if (incoming.isNotEmpty() && skipped.isEmpty())
+                        repo.indexRestored()
                 }
             }
-            RestoreResult(incoming.size, skipped)
-        }
+            return RestoreResult(incoming.size, skipped)
     }
 
     private fun folderName(tree: Uri): String? {

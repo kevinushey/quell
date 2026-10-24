@@ -225,8 +225,6 @@ class DatasetRepository(private val context: Context) {
             _datasets.value = nextDatasets
             persistSweeps(nextSweeps)
             _sweeps.value = nextSweeps
-            // What a restore brought back is as complete as the folder allows; the lost-index warning has done its job.
-            _degraded.value = false
         }
     }
 
@@ -286,13 +284,19 @@ class DatasetRepository(private val context: Context) {
     suspend fun delete(id: String) = withContext(Dispatchers.IO) {
         mutex.withLock {
             loadLocked()
-            File(dir, "$id.bin").delete()
-            cache.remove(id)
+            // Persist first: an orphaned .bin after a failed index write is harmless, a missing one is not.
             val next = _datasets.value.filterNot { it.id == id }
             persistIndex(next)
-            _datasets.value = next
             rememberDeleted(id)
+            _datasets.value = next
+            cache.remove(id)
+            File(dir, "$id.bin").delete()
         }
+    }
+
+    /** A restore brought back everything the folder had: the lost-index warning has done its job. */
+    fun indexRestored() {
+        _degraded.value = false
     }
 
     /** The mirror has removed (or never had) these; stop remembering them. */

@@ -138,6 +138,20 @@ class SyncPlanTest {
     }
 
     @Test
+    fun remoteEntriesWithoutAFileAreCarriedNotDropped() {
+        fun meta(id: String) = com.kevinushey.quell.data.DatasetMeta(id, id, "$id.csv", 0, 10, 400.0, 1.0, 0)
+        val local = listOf(meta("a"))
+        // b's .bin has not arrived yet; c was deleted here; a is also listed remotely.
+        val remoteIndex = listOf(meta("a"), meta("b"), meta("c"))
+        val merged = SyncPlan.mergeIndex(local, remoteIndex, setOf("c"))
+        assertEquals(listOf("a", "b"), merged.map { it.id })
+        assertTrue(SyncPlan.indexWriteIsSafe(merged.map { it.id }, remoteIndex.map { it.id }, setOf("c")))
+        // The plan still does not count b as restorable until its file is there.
+        val p = plan(listOf("a"), remote("a.bin", "index.json", "sweeps.json"), indexIds = listOf("a", "b"))
+        assertTrue(p.notOnThisPhone.isEmpty())
+    }
+
+    @Test
     fun csvCopiesFollowTheToggle() {
         val r = remote("a.bin", "a-run.csv", "index.json", "sweeps.json")
         val state = SyncState(mirrored = setOf("a"), csvNames = mapOf("a" to "a-run.csv"), indexHash = "i1", sweepsHash = "s1")

@@ -64,7 +64,9 @@ fun SettingsScreen(vm: MainViewModel, onOpenGuide: () -> Unit) {
             Text(
                 buildString {
                     append("Folder: ${sync.folderName ?: "(chosen)"}")
-                    if (sync.syncing)
+                    if (sync.restoring)
+                        append("  |  restoring...")
+                    else if (sync.syncing)
                         append("  |  syncing...")
                     else if (when_ != null)
                         append("  |  ${sync.mirroredCount} mirrored, last sync $when_")
@@ -99,8 +101,8 @@ fun SettingsScreen(vm: MainViewModel, onOpenGuide: () -> Unit) {
                     vm.syncNow()
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { vm.syncNow() }, enabled = app.syncEnabled && !sync.syncing) { Text("Sync now") }
-                OutlinedButton(onClick = { confirmRestore = true }) { Text("Restore from folder") }
+                OutlinedButton(onClick = { vm.syncNow() }, enabled = app.syncEnabled && !sync.syncing && !sync.restoring) { Text("Sync now") }
+                OutlinedButton(onClick = { confirmRestore = true }, enabled = !sync.restoring) { Text("Restore from folder") }
                 TextButton(onClick = { pickFolder.launch(null) }) { Text("Change") }
             }
             TextButton(onClick = { vm.setSyncFolder(null) }) { Text("Stop mirroring") }
