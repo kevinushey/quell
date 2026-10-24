@@ -379,6 +379,9 @@ private fun DetailLine(label: String, value: String) {
 @Composable
 private fun MassDialog(meta: DatasetMeta, onDismiss: () -> Unit, onConfirm: (Double?) -> Unit) {
     var text by remember { mutableStateOf(meta.damperMassGrams?.let { "%.1f".format(java.util.Locale.US, it) } ?: "") }
+    // Empty clears the mass; anything else must parse, so a typo cannot silently clear it.
+    val parsed = com.kevinushey.quell.ui.components.parseDecimal(text)?.takeIf { it.isFinite() }
+    val valid = text.isBlank() || parsed != null
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Damper mass") },
@@ -389,12 +392,14 @@ private fun MassDialog(meta: DatasetMeta, onDismiss: () -> Unit, onConfirm: (Dou
                     value = text,
                     onValueChange = { text = it },
                     singleLine = true,
+                    isError = !valid,
                     label = { Text("grams") },
+                    supportingText = if (valid) null else ({ Text("Enter a number") }),
                     keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
                 )
             }
         },
-        confirmButton = { TextButton(onClick = { onConfirm(text.trim().toDoubleOrNull()?.takeIf { it.isFinite() }) }) { Text("Save") } },
+        confirmButton = { TextButton(enabled = valid, onClick = { onConfirm(parsed) }) { Text("Save") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }

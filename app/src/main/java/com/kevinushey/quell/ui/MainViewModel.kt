@@ -69,6 +69,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val importMutex = Mutex()
 
     private val resampledCache = ByteBudgetCache<ResampleKey, Resampled>(ByteBudgetCache.defaultBudget()) { it.size.toLong() * 4 * 8 }
+    /** Windows that could not be resampled; reported once, then silent until the trim changes. */
+    private val failedResamples = HashSet<ResampleKey>()
     private val psdCache = LinkedHashMap<PsdKey, Pair<Spectrum, Double>>()
     private val cacheMutex = Mutex()
 
@@ -88,8 +90,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch {
-            _analysis.value = settingsStore.analysis.first()
-            _appSettings.value = settingsStore.app.first()
+            // Settings are a convenience; the datasets must load even if they cannot be read.
+            try {
+                _analysis.value = settingsStore.analysis.first()
+                _appSettings.value = settingsStore.app.first()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _messages.tryEmit("Settings could not be read; using defaults")
+            }
             repo.load()
             _ready.value = true
         }
@@ -216,6 +225,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             repo.delete(id)
             cacheMutex.withLock {
                 resampledCache.removeIf { it.id == id }
+                failedResamples.removeAll { it.id == id }
                 psdCache.keys.removeAll { it.id == id }
                 tapCache.keys.removeAll { it.id == id }
             }
@@ -264,12 +274,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Uniformly resampled samples inside the dataset's trim window. */
     suspend fun resampled(meta: DatasetMeta): Resampled? {
         val key = ResampleKey(meta.id, meta.trimStart, meta.trimEnd)
-        cacheMutex.withLock { resampledCache[key] }?.let { return it }
+        cacheMutex.withLock {
+            resampledCache[key]?.let { return it }
+            if (key in failedResamples)
+                return null
+        }
         val s = repo.series(meta.id) ?: return null
-        val r = analyzeOrReport(meta) { Resampled.from(s.slice(meta.trimStart, meta.effectiveTrimEnd)) } ?: return null
+        val r = analyzeOrReport(meta) { Resampled.from(s.slice(meta.trimStart, meta.effectiveTrimEnd)) }
         cacheMutex.withLock {
             resampledCache.removeIf { it.id == meta.id && it != key }
-            resampledCache.put(key, r)
+            failedResamples.removeAll { it.id == meta.id }
+            if (r == null)
+                failedResamples.add(key)
+            else
+                resampledCache.put(key, r)
         }
         return r
     }

@@ -190,7 +190,7 @@ private fun NumberField(label: String, value: Double, modifier: Modifier = Modif
     // Keep the raw text local so partially typed numbers ("0.") are not rewritten under the cursor.
     var text by remember { mutableStateOf(formatNumber(value)) }
     LaunchedEffect(value) {
-        if (text.toDoubleOrNull() != value)
+        if (parseDecimal(text) != value)
             text = formatNumber(value)
     }
     OutlinedTextField(
@@ -198,7 +198,7 @@ private fun NumberField(label: String, value: Double, modifier: Modifier = Modif
         onValueChange = { t ->
             text = t
             // Infinity/NaN would make the settings unserializable.
-            t.toDoubleOrNull()?.takeIf { it.isFinite() }?.let(onCommit)
+            parseDecimal(t)?.takeIf { it.isFinite() }?.let(onCommit)
         },
         label = { Text(label) },
         singleLine = true,
@@ -206,6 +206,9 @@ private fun NumberField(label: String, value: Double, modifier: Modifier = Modif
         modifier = modifier,
     )
 }
+
+/** Decimal keyboards offer ',' in many locales; accept it as the separator too. */
+internal fun parseDecimal(text: String): Double? = text.trim().replace(',', '.').toDoubleOrNull()
 
 private fun formatNumber(v: Double): String =
     if (v == Math.floor(v) && Math.abs(v) < 1e9) v.toLong().toString() else String.format(Locale.US, "%.2f", v).trimEnd('0').trimEnd('.')

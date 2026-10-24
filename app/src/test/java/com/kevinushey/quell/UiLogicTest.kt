@@ -9,6 +9,13 @@ import org.junit.Test
 class UiLogicTest {
 
     @Test
+    fun decimalFieldsAcceptCommaSeparators() {
+        assertEquals(0.5, com.kevinushey.quell.ui.components.parseDecimal("0,5")!!, 0.0)
+        assertEquals(12.5, com.kevinushey.quell.ui.components.parseDecimal(" 12.5 ")!!, 0.0)
+        assertEquals(null, com.kevinushey.quell.ui.components.parseDecimal("abc"))
+    }
+
+    @Test
     fun formatDurationRoundsWholeMinutes() {
         assertEquals("2m 00s", formatDuration(119.96))
         assertEquals("1m 05s", formatDuration(65.2))
