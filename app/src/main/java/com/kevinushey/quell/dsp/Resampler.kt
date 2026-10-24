@@ -10,6 +10,9 @@ object Resampler {
     /** Upper bound on one resampled channel; beyond this the timestamps are almost certainly wrong. */
     const val MAX_SAMPLES = 4_000_000L
 
+    /** Fewest resampled samples worth analyzing; matches the recorder's minimum capture. */
+    const val MIN_SAMPLES = 16
+
     private const val MAX_DELTAS = 1 shl 16
 
     /** Number of samples a uniform grid at `sampleRate` needs to span `time`, without overflow. */

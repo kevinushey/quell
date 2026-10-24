@@ -47,7 +47,11 @@ data class Sweep(
     fun valueOf(meta: DatasetMeta): Double? = if (parameter == SweepParameter.MASS) meta.damperMassGrams else meta.sweepValue
 
     /** Value to pre-fill for the next run: what the analysis recommends, else continue the last step. */
-    val suggestedNext: Double? get() = nextValue ?: lastValue?.let { it + (step ?: 0.0) }
+    val suggestedNext: Double?
+        get() {
+            val next = nextValue ?: lastValue?.let { it + (step ?: 0.0) } ?: return null
+            return if (parameterNonNegative) next.coerceAtLeast(0.0) else next
+        }
 
     /** Bookkeeping after a run at `value` was added; the recommendation is recomputed from the new data. */
     fun advanced(value: Double): Sweep =

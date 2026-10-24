@@ -64,7 +64,14 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                         _status.value = SyncStatus()
                         return@collect
                     }
-                    syncNow(Uri.parse(tree), app.syncCsv)
+                    // Nothing may end this loop, or the process: a bad grant is a status line, not a crash.
+                    try {
+                        syncNow(Uri.parse(tree), app.syncCsv)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        _status.value = _status.value.copy(syncing = false, lastError = e.message ?: e.javaClass.simpleName)
+                    }
                 }
         }
     }
@@ -72,8 +79,10 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
     /** One mirror pass; safe to call from the UI's "Sync now". */
     suspend fun syncNow(tree: Uri, csv: Boolean) = withContext(Dispatchers.IO) {
         mutex.withLock {
-            _status.value = _status.value.copy(syncing = true, folderName = folderName(tree))
+            _status.value = _status.value.copy(syncing = true)
             try {
+                // The name lookup touches the grant too; a revoked folder must land in lastError like anything else.
+                _status.value = _status.value.copy(folderName = folderName(tree))
                 val (count, foreign) = mirror(tree, csv)
                 _status.value = _status.value.copy(syncing = false, lastSyncEpochMs = System.currentTimeMillis(), mirroredCount = count, lastError = null, foreignCount = foreign)
             } catch (e: CancellationException) {
@@ -143,7 +152,14 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
     private fun remoteIndexIds(remote: Map<String, Uri>): List<String> {
         val uri = remote["index.json"] ?: return emptyList()
         val text = runCatching { context.contentResolver.openInputStream(uri)?.use { String(it.readBytes(), Charsets.UTF_8) } }.getOrNull() ?: return emptyList()
-        return runCatching { DatasetRepository.indexJson.decodeFromString<List<DatasetMeta>>(DatasetRepository.migrateIndex(text)).map { it.id } }.getOrDefault(emptyList())
+        return runCatching { DatasetRepository.indexJson.decodeFromString<List<DatasetMeta>>(DatasetRepository.migrateIndex(text)).map { it.id } }
+            .getOrDefault(emptyList())
+            .filter { ID_SHAPE.matches(it) }
+    }
+
+    private companion object {
+        /** The UUIDs this app generates; anything else in a folder's index is not ours to place in the sandbox. */
+        val ID_SHAPE = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
     }
 
     /**
@@ -157,13 +173,16 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             val indexUri = remote["index.json"] ?: throw IllegalStateException("No index.json in that folder")
             val indexText = context.contentResolver.openInputStream(indexUri)?.use { String(it.readBytes(), Charsets.UTF_8) }
                 ?: throw IllegalStateException("Could not read index.json")
+            // Ids become file names inside the sandbox; only the shape this app generates is accepted.
             val metas = DatasetRepository.indexJson.decodeFromString<List<DatasetMeta>>(DatasetRepository.migrateIndex(indexText))
+                .filter { ID_SHAPE.matches(it.id) }
             val sweeps = remote["sweeps.json"]?.let { uri ->
                 context.contentResolver.openInputStream(uri)?.use { String(it.readBytes(), Charsets.UTF_8) }
             }?.let { runCatching { DatasetRepository.indexJson.decodeFromString<List<Sweep>>(it) }.getOrNull() } ?: emptyList()
 
             val have = repo.datasets.value.map { it.id }.toSet()
             val incoming = ArrayList<DatasetMeta>()
+            val skipped = ArrayList<String>()
             for (meta in metas) {
                 if (meta.id in have)
                     continue
@@ -178,11 +197,18 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                     if (!tmp.renameTo(target))
                         throw IllegalStateException("Could not place ${meta.id}.bin")
                     incoming.add(meta)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // One bad file must not abandon the rest of the restore.
+                    skipped.add(meta.name)
                 } finally {
                     tmp.delete()
                 }
             }
             repo.adopt(incoming, sweeps)
+            if (skipped.isNotEmpty())
+                _status.value = _status.value.copy(lastError = "Could not restore ${skipped.size} dataset${if (skipped.size == 1) "" else "s"}: ${skipped.joinToString()}")
             // The restored files are already in the folder, so they count as mirrored.
             val state = loadState()
             saveState(state.copy(mirrored = state.mirrored + incoming.map { it.id }))

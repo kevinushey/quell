@@ -412,7 +412,8 @@ private fun SweepChart(sweep: Sweep, s: SweepSummary, isTap: Boolean) {
         if (s.sigma.isFinite() && s.sigma > 0)
             bands.add(ChartBand("sigma", tertiary, fx, DoubleArray(fx.size) { fy[it] - s.sigma }, DoubleArray(fx.size) { fy[it] + s.sigma }))
     }
-    val errorBars = pooled.map { ErrorBar(it.value, it.metric, it.error, primary) }
+    // Value-to-value comparison: the baseline's share of the error is common to every point and left out.
+    val errorBars = pooled.map { ErrorBar(it.value, it.metric, it.ownError, primary) }
     val markers = ArrayList<VerticalMarker>()
     s.optimum?.let { markers.add(VerticalMarker(it, "optimum", tertiary)) }
     ChartCard(

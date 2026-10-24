@@ -46,7 +46,8 @@ class DatasetRepository(private val context: Context) {
     val sweeps: StateFlow<List<Sweep>> = _sweeps
 
     /** Problems that lost or endangered data, for the UI to surface. */
-    private val _problems = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    // Replayed: the store may load (and complain) from the application scope before any screen listens.
+    private val _problems = MutableSharedFlow<String>(replay = 4, extraBufferCapacity = 4)
     val problems: SharedFlow<String> = _problems
 
     suspend fun load() = withContext(Dispatchers.IO) {

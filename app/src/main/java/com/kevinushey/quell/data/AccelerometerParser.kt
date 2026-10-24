@@ -181,7 +181,7 @@ object AccelerometerParser {
     private fun checkResamplable(s: TimeSeries) {
         val fs = Resampler.estimateSampleRate(s.time)
         val length = Resampler.resampledLength(s.time, fs)
-        if (fs <= 0 || length < com.kevinushey.quell.ui.Resampled.MIN_SAMPLES)
+        if (fs <= 0 || length < Resampler.MIN_SAMPLES)
             throw ImportException("The time column does not advance; check that the first column holds timestamps in seconds.")
         if (length > MemoryBudget.maxSamples())
             throw ImportException(

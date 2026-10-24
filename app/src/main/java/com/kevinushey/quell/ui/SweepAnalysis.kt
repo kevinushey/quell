@@ -21,10 +21,16 @@ class SweepPoint(
     val peakFreq: Double,
     /** Band RMS in dB versus the baseline; drive runs only. */
     val bandRmsDb: Double,
-    /** One-sigma uncertainty of `metric`, in its own units. */
+    /** One-sigma uncertainty of `metric` as an absolute level versus the baseline, in its own units. */
     val error: Double,
     /** Why the run takes no part in the fit, or null when it does. */
     val problem: String?,
+    /**
+     * The run's own share of that uncertainty. The baseline's error is common
+     * to every point and cancels when values are compared with each other, so
+     * fits, spread tests and duration hints use this one.
+     */
+    val ownError: Double = error,
 ) {
     val usable: Boolean get() = problem == null && value != null && metric.isFinite()
 
@@ -33,7 +39,7 @@ class SweepPoint(
 }
 
 /** Every usable run at one parameter value, combined; repeats tighten the estimate. */
-class PooledPoint(val value: Double, val metric: Double, val error: Double, val runs: List<SweepPoint>) {
+class PooledPoint(val value: Double, val metric: Double, val error: Double, val ownError: Double, val runs: List<SweepPoint>) {
     val repeats: Int get() = runs.size
 }
 
@@ -98,9 +104,9 @@ object SweepAnalysis {
             }
             val metric = if (problem == null) 10 * log10(peak!!.power / refPeak!!.power) else Double.NaN
             val rmsDb = if (problem == null && refRms > 0 && rms > 0) 20 * log10(rms / refRms) else Double.NaN
-            // Both runs contribute random error; the baseline's is shared by every point.
+            // Both runs contribute random error to the level versus baseline; the baseline's is shared by every point.
             val err = sqrt(r.randomErrorDb * r.randomErrorDb + (baseline?.randomErrorDb ?: 0.0).let { it * it })
-            SweepPoint(r.meta, sweep.valueOf(r.meta), metric, peak?.freq ?: Double.NaN, rmsDb, err, problem)
+            SweepPoint(r.meta, sweep.valueOf(r.meta), metric, peak?.freq ?: Double.NaN, rmsDb, err, problem, ownError = r.randomErrorDb)
         }
     }
 
@@ -129,19 +135,22 @@ object SweepAnalysis {
     fun pool(points: List<SweepPoint>): List<PooledPoint> {
         val groups = points.filter { it.usable }.groupBy { it.value!! }.toSortedMap()
         return groups.map { (value, runs) ->
-            val weighted = runs.all { it.error.isFinite() && it.error > 0 }
-            val weights = runs.map { if (weighted) 1 / (it.error * it.error) else 1.0 }
+            val weighted = runs.all { it.ownError.isFinite() && it.ownError > 0 }
+            val weights = runs.map { if (weighted) 1 / (it.ownError * it.ownError) else 1.0 }
             val wsum = weights.sum()
             val mean = runs.indices.sumOf { weights[it] * runs[it].metric } / wsum
-            val propagated = if (weighted) 1 / sqrt(wsum) else Double.NaN
             val sampleSe = if (runs.size >= 2) sqrt(runs.sumOf { (it.metric - mean) * (it.metric - mean) } / (runs.size - 1) / runs.size) else Double.NaN
-            val error = when {
-                runs.size == 1 -> runs[0].error
-                propagated.isFinite() && sampleSe.isFinite() -> maxOf(propagated, sampleSe)
-                propagated.isFinite() -> propagated
-                else -> sampleSe
+            fun combine(errors: List<Double>): Double {
+                val finite = errors.all { it.isFinite() && it > 0 }
+                val propagated = if (finite) 1 / sqrt(errors.sumOf { 1 / (it * it) }) else Double.NaN
+                return when {
+                    runs.size == 1 -> errors[0]
+                    propagated.isFinite() && sampleSe.isFinite() -> maxOf(propagated, sampleSe)
+                    propagated.isFinite() -> propagated
+                    else -> sampleSe
+                }
             }
-            PooledPoint(value, mean, error, runs)
+            PooledPoint(value, mean, combine(runs.map { it.error }), combine(runs.map { it.ownError }), runs)
         }
     }
 
@@ -153,7 +162,7 @@ object SweepAnalysis {
             return null
         // Weighted normal equations for [u^2 u 1] on u = (x - x0) / scale, so neither large values
         // (grams) nor tiny steps (N/mm) upset the conditioning; the result is mapped back to x.
-        val weighted = pts.all { it.error.isFinite() && it.error > 0 }
+        val weighted = pts.all { it.ownError.isFinite() && it.ownError > 0 }
         val x0 = pts.sumOf { it.value } / pts.size
         val scale = (pts.maxOf { it.value } - pts.minOf { it.value }).takeIf { it > 0 } ?: 1.0
         var s0 = 0.0; var s1 = 0.0; var s2 = 0.0; var s3 = 0.0; var s4 = 0.0
@@ -161,7 +170,7 @@ object SweepAnalysis {
         for (p in pts) {
             val x = (p.value - x0) / scale
             val y = p.metric
-            val w = if (weighted) 1 / (p.error * p.error) else 1.0
+            val w = if (weighted) 1 / (p.ownError * p.ownError) else 1.0
             s0 += w; s1 += w * x; s2 += w * x * x; s3 += w * x * x * x; s4 += w * x * x * x * x
             t0 += w * y; t1 += w * x * y; t2 += w * x * x * y
         }
@@ -179,7 +188,7 @@ object SweepAnalysis {
         var ss = 0.0
         var wTotal = 0.0
         for (p in pts) {
-            val w = if (weighted) 1 / (p.error * p.error) else 1.0
+            val w = if (weighted) 1 / (p.ownError * p.ownError) else 1.0
             val d = p.metric - (a * p.value * p.value + bb * p.value + cc)
             ss += w * d * d
             wTotal += w
@@ -271,7 +280,7 @@ object SweepAnalysis {
      * answer is a run length (or a number of repeats of the current length).
      */
     fun durationHint(usable: List<SweepPoint>): String? {
-        val errors = usable.map { it.error }.filter { it.isFinite() && it > 0 }.sorted()
+        val errors = usable.map { it.ownError }.filter { it.isFinite() && it > 0 }.sorted()
         val durations = usable.map { it.durationSec }.filter { it > 0 }.sorted()
         if (errors.isEmpty() || durations.isEmpty())
             return null
@@ -303,8 +312,9 @@ object SweepAnalysis {
         return if (best.value == pooled[1].value) pooled[1].value + step else pooled[0].value - step
     }
 
+    /** Typical own error of a pooled point: the baseline's share cancels between values. */
     private fun medianError(pts: List<PooledPoint>): Double {
-        val e = pts.map { it.error }.filter { it.isFinite() }.sorted()
+        val e = pts.map { it.ownError }.filter { it.isFinite() }.sorted()
         return if (e.isEmpty()) 0.0 else e[e.size / 2]
     }
 

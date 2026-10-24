@@ -39,6 +39,8 @@ class SweepAnalysisTest {
         val b = a.advanced(350.0)
         assertEquals(50.0, b.step!!, 0.0)
         assertEquals(400.0, b.suggestedNext!!, 0.0)
+        // Descending mass sweeps stop at zero instead of proposing a negative mass.
+        assertEquals(0.0, sweep.advanced(30.0).advanced(10.0).suggestedNext!!, 0.0)
         // A recommendation from the analysis wins, and recording clears it.
         assertEquals(420.0, b.copy(nextValue = 420.0).suggestedNext!!, 0.0)
         assertNull(b.copy(nextValue = 420.0).advanced(420.0).nextValue)
@@ -157,6 +159,10 @@ class SweepAnalysisTest {
         assertTrue(hint, hint.startsWith("Each run of about 17 s gives +/- 1.8 dB; about 441 s per value (or 26 repeats"))
         // Already precise enough: nothing to say.
         assertEquals(null, SweepAnalysis.durationHint(listOf(SweepPoint(meta17, 300.0, -2.0, 25.0, -2.0, 0.2, null))))
+        // The baseline's error is common to every value and must not inflate the hint: 1.27 dB own error
+        // inside a 1.8 dB combined one asks for about 13 repeats, not 26.
+        val shared = SweepPoint(meta17, 300.0, -2.0, 25.0, -2.0, 1.8, null, ownError = 1.27)
+        assertTrue(SweepAnalysis.durationHint(listOf(shared))!!.contains("(or 13 repeats"))
     }
 
     @Test
