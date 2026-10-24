@@ -50,6 +50,35 @@ class AnalysisEdgeCaseTest {
     }
 
     @Test
+    fun bandRmsIsIndependentOfFrequencyGrid() {
+        // Identical flat PSDs on 200 Hz and 400 Hz grids (256-point FFT) must integrate to the same band power.
+        val coarse = Spectrum(DoubleArray(129) { it * 400.0 / 256 }, DoubleArray(129) { 1.0 })
+        val fine = Spectrum(DoubleArray(129) { it * 200.0 / 256 }, DoubleArray(129) { 1.0 })
+        assertEquals(1.0, coarse.bandRms(24.5, 25.5), 1e-9)
+        assertEquals(1.0, fine.bandRms(24.5, 25.5), 1e-9)
+        assertEquals(sqrt(10.0), coarse.bandRms(20.0, 30.0), 1e-9)
+        assertEquals(1.0, coarse.meanPower(24.5, 25.5), 1e-9)
+    }
+
+    @Test
+    fun singleBinRestrictionKeepsSpacing() {
+        val s = Spectrum(DoubleArray(513) { it * 400.0 / 1024 }, DoubleArray(513) { 2.0 })
+        val one = s.restrictTo(24.9, 25.1)
+        assertEquals(1, one.size)
+        assertEquals(s.binWidth, one.binWidth, 1e-12)
+        val total = Normalization.TOTAL_POWER.apply(one)
+        assertEquals(1.0 / one.binWidth, total.power[0], 1e-9)
+        assertEquals(s.binWidth, one.smoothed(3).binWidth, 1e-12)
+    }
+
+    @Test
+    fun sampleRateEstimateSurvivesSubsampling() {
+        val n = 300_000
+        val time = DoubleArray(n) { it / 400.0 + if (it % 7 == 0) 0.0003 else 0.0 }
+        assertEquals(400.0, Resampler.estimateSampleRate(time), 2.0)
+    }
+
+    @Test
     fun bandWithoutBinsIsNotCovered() {
         val s = Spectrum(DoubleArray(129) { it * 400.0 / 256 }, DoubleArray(129) { 1.0 })
         assertTrue(s.covers(24.0, 26.0))
@@ -98,7 +127,7 @@ class AnalysisEdgeCaseTest {
         val s = Spectrum(DoubleArray(51) { it.toDouble() }, DoubleArray(51) { 1.0 })
         assertTrue(s.bandRms(60.0, 150.0).isNaN())
         assertTrue(Normalization.REFERENCE_BAND.referenceFactor(s, 60.0, 150.0).isNaN())
-        assertEquals(sqrt(11.0), s.bandRms(10.0, 20.0), 1e-9)
+        assertEquals(sqrt(10.0), s.bandRms(10.0, 20.0), 1e-9)
         assertEquals(1.0, Normalization.REFERENCE_BAND.referenceFactor(s, 10.0, 20.0), 1e-9)
     }
 

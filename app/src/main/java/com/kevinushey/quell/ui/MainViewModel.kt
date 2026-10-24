@@ -126,6 +126,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return
         viewModelScope.launch {
             _busy.value++
+            releaseMemoryForSave()
             var ok = 0
             var firstError: String? = null
             for (uri in uris) {
@@ -153,10 +154,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Caches are rebuilt cheaply from disk; a pending recording is not. Free the
+     * heap before the save-time copies and analysis so they cannot OOM.
+     */
+    private suspend fun releaseMemoryForSave() {
+        cacheMutex.withLock { resampledCache.clear() }
+        repo.releaseSamples()
+    }
+
     /** Persists a recording; false means it was not saved and the caller must keep it. */
     suspend fun addRecording(name: String, run: ParsedRun): Boolean {
         _busy.value++
         return try {
+            releaseMemoryForSave()
             repo.add(name, "Recorded on device", run)
             _messages.tryEmit("Saved recording \"$name\"")
             true

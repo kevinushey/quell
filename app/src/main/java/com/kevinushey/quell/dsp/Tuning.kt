@@ -106,9 +106,18 @@ object Tuning {
                 verdict = DampingVerdict.OVER_DAMPED
                 advice = "Shallow notch and side peaks %.1f dB above the optimum: the absorber is over-damped. Use a stiffer or less lossy mount; target zeta about %.3f.".format(shortfall, optZeta)
             }
-            shortfall.isNaN() || shortfall <= 3 -> {
+            achieved >= 0 -> {
+                verdict = DampingVerdict.INCONCLUSIVE
+                advice = "Peaks are split but the tallest in-band peak is %.1f dB above baseline. Check that both runs cover the same mode and road input before tuning further.".format(achieved)
+            }
+            shortfall.isNaN() -> {
+                // Without the baseline's half-power bandwidth inside the band there is no optimum to compare against.
+                verdict = DampingVerdict.INCONCLUSIVE
+                advice = "Balanced peaks with a %.0f dB notch, but the baseline's damping could not be estimated inside the target band, so the optimum is unknown. Widen the band to include the baseline peak's half-power points.".format(notch)
+            }
+            shortfall <= 3 -> {
                 verdict = DampingVerdict.NEAR_OPTIMAL
-                advice = "Balanced peaks within %.1f dB of the Den Hartog optimum for mass ratio %.3f.".format(if (shortfall.isNaN()) 0.0 else shortfall, mu)
+                advice = "Balanced peaks within %.1f dB of the Den Hartog optimum for mass ratio %.3f.".format(shortfall, mu)
             }
             else -> {
                 verdict = DampingVerdict.INCONCLUSIVE

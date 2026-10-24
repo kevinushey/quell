@@ -58,6 +58,15 @@ class Recorder(context: Context) : SensorEventListener {
         count = 0
         startNanos = 0L
         startedAt = Date()
+        // Rate bookkeeping is per capture: a previous run's faster delivery must not cap this one.
+        peakRate = 0.0
+        lastStatusPush = 0L
+        if (times.isEmpty()) {
+            times = DoubleArray(1 shl 16)
+            xs = DoubleArray(1 shl 16)
+            ys = DoubleArray(1 shl 16)
+            zs = DoubleArray(1 shl 16)
+        }
         // SENSOR_DELAY_FASTEST asks for the hardware maximum; some devices cap this without HIGH_SAMPLING_RATE_SENSORS.
         val ok = manager.registerListener(this, s, SensorManager.SENSOR_DELAY_FASTEST)
         _status.value = RecorderStatus(recording = ok, sensorName = s.name, sensorAvailable = true)
@@ -68,11 +77,14 @@ class Recorder(context: Context) : SensorEventListener {
     fun stop(): ParsedRun? {
         manager.unregisterListener(this)
         _status.value = _status.value.copy(recording = false)
-        if (count < 16)
+        if (count < 16) {
+            releaseBuffers()
             return null
+        }
 
         val kept = analyzableCount()
         val series = TimeSeries(times.copyOf(kept), xs.copyOf(kept), ys.copyOf(kept), zs.copyOf(kept))
+        releaseBuffers()
         val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
         return ParsedRun(
             series = series,
@@ -132,6 +144,15 @@ class Recorder(context: Context) : SensorEventListener {
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+
+    /** The capture now lives in the returned ParsedRun; the growth buffers would only crowd the save. */
+    private fun releaseBuffers() {
+        count = 0
+        times = DoubleArray(0)
+        xs = DoubleArray(0)
+        ys = DoubleArray(0)
+        zs = DoubleArray(0)
+    }
 
     /**
      * Conservative stand-in for Resampler.resampledLength: the full-capture

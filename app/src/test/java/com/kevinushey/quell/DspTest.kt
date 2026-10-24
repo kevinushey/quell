@@ -212,4 +212,19 @@ class TuningTest {
         val d = com.kevinushey.quell.dsp.Tuning.diagnose(basePeak, damped, 15.0, 35.0, split)!!
         assertEquals(com.kevinushey.quell.dsp.DampingVerdict.DETUNED_LOW, d.verdict)
     }
+
+    @Test
+    fun diagnosisWithoutBaselineDampingIsInconclusive() {
+        val df = 0.1
+        val n = (60 / df).toInt()
+        val f = DoubleArray(n) { it * df }
+        fun lor(fc: Double, fi: Double, damp: Double) = 1.0 / ((1 - (fi / fc) * (fi / fc)).let { it * it } + damp)
+        // Baseline peak whose half-power points were never found: bandwidth NaN, so no optimum exists.
+        val basePeak = com.kevinushey.quell.dsp.ModalPeak(25.0, lor(25.0, 25.0, 0.0016), Double.NaN)
+        val damped = com.kevinushey.quell.dsp.Spectrum(f, DoubleArray(n) { 0.1 * lor(22.5, f[it], 0.001) + 0.1 * lor(27.5, f[it], 0.001) + 1e-3 })
+        val split = com.kevinushey.quell.dsp.Modal.splitPeak(damped, 15.0, 35.0)!!
+        val d = com.kevinushey.quell.dsp.Tuning.diagnose(basePeak, damped, 15.0, 35.0, split)!!
+        assertTrue(d.verdict != com.kevinushey.quell.dsp.DampingVerdict.NEAR_OPTIMAL)
+        assertTrue(d.advice.contains("optimum is unknown") || d.advice.contains("above baseline") || d.advice.contains("notch"))
+    }
 }

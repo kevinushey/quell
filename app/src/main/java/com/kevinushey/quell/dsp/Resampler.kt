@@ -10,6 +10,8 @@ object Resampler {
     /** Upper bound on one resampled channel; beyond this the timestamps are almost certainly wrong. */
     const val MAX_SAMPLES = 4_000_000L
 
+    private const val MAX_DELTAS = 1 shl 16
+
     /** Number of samples a uniform grid at `sampleRate` needs to span `time`, without overflow. */
     fun resampledLength(time: DoubleArray, sampleRate: Double): Long {
         if (time.isEmpty() || sampleRate <= 0.0)
@@ -22,14 +24,23 @@ object Resampler {
         if (time.size < 2)
             return 0.0
 
-        val deltas = DoubleArray(time.size - 1) { time[it + 1] - time[it] }
-            .filter { it > 0.0 }
-            .sorted()
-        if (deltas.isEmpty())
+        // A strided subsample of the gaps gives the same median without three full-length copies.
+        val gaps = time.size - 1
+        val stride = maxOf(1, gaps / MAX_DELTAS)
+        val deltas = DoubleArray(gaps / stride + 1)
+        var n = 0
+        var i = 0
+        while (i < gaps) {
+            val d = time[i + 1] - time[i]
+            if (d > 0.0)
+                deltas[n++] = d
+            i += stride
+        }
+        if (n == 0)
             return 0.0
 
-        val median = deltas[deltas.size / 2]
-        return 1.0 / median
+        val sorted = deltas.copyOf(n).also { it.sort() }
+        return 1.0 / sorted[n / 2]
     }
 
     fun resample(time: DoubleArray, values: DoubleArray, sampleRate: Double): DoubleArray {

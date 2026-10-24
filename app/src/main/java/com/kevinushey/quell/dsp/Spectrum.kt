@@ -7,17 +7,19 @@ class Spectrum(
     val segments: Int = 0,
     /** Real samples under the window per segment (0 = unknown, assume the FFT length). */
     val windowLength: Int = 0,
+    /** Bin spacing to keep when fewer than two bins remain (restriction to one bin must not lose it). */
+    spacing: Double = 0.0,
 ) {
     init {
         require(freq.size == power.size)
     }
 
     val size: Int get() = freq.size
-    val binWidth: Double get() = if (freq.size > 1) freq[1] - freq[0] else 0.0
+    val binWidth: Double = if (freq.size > 1) freq[1] - freq[0] else spacing
     val maxFreq: Double get() = freq.lastOrNull() ?: 0.0
 
     fun map(transform: (Int, Double) -> Double): Spectrum =
-        Spectrum(freq, DoubleArray(size) { transform(it, power[it]) }, segments)
+        Spectrum(freq, DoubleArray(size) { transform(it, power[it]) }, segments, windowLength, binWidth)
 
     /** Linear interpolation of `power` at frequency f (clamped at the ends). */
     fun interpolate(f: Double): Double {
@@ -47,7 +49,7 @@ class Spectrum(
      * repeated endpoint, so comparisons cannot fabricate differences there.
      */
     fun onGrid(grid: DoubleArray): Spectrum =
-        Spectrum(grid, DoubleArray(grid.size) { if (supports(grid[it])) interpolate(grid[it]) else Double.NaN }, segments)
+        Spectrum(grid, DoubleArray(grid.size) { if (supports(grid[it])) interpolate(grid[it]) else Double.NaN }, segments, windowLength, binWidth)
 
     fun supports(f: Double): Boolean = size > 0 && f >= freq[0] && f <= freq[size - 1]
 
@@ -57,31 +59,39 @@ class Spectrum(
 
     fun restrictTo(minFreq: Double, maxFreq: Double): Spectrum {
         val idx = freq.indices.filter { freq[it] in minFreq..maxFreq }
-        return Spectrum(DoubleArray(idx.size) { freq[idx[it]] }, DoubleArray(idx.size) { power[idx[it]] }, segments)
+        return Spectrum(DoubleArray(idx.size) { freq[idx[it]] }, DoubleArray(idx.size) { power[idx[it]] }, segments, windowLength, binWidth)
     }
 
-    /** Mean power over [lo, hi]; NaN if no bins fall inside. */
+    /** Width of bin i that lies inside [lo, hi]; each bin spans +/- half a bin width around its centre. */
+    private fun overlap(i: Int, lo: Double, hi: Double): Double {
+        val half = binWidth / 2
+        return (minOf(hi, freq[i] + half) - maxOf(lo, freq[i] - half)).coerceAtLeast(0.0)
+    }
+
+    /** Power averaged over [lo, hi], weighting edge bins by the part of them inside the band; NaN if nothing is. */
     fun meanPower(lo: Double, hi: Double): Double {
         var sum = 0.0
-        var n = 0
+        var weight = 0.0
         for (i in 0 until size) {
-            if (freq[i] in lo..hi) {
-                sum += power[i]
-                n++
-            }
+            val w = overlap(i, lo, hi)
+            sum += power[i] * w
+            weight += w
         }
-        return if (n > 0) sum / n else Double.NaN
+        return if (weight > 0) sum / weight else Double.NaN
     }
 
-    /** RMS of the underlying signal within [lo, hi]: sqrt of the integrated PSD; NaN if the band is not covered. */
+    /**
+     * RMS of the underlying signal within [lo, hi]: sqrt of the PSD integrated
+     * over exactly the band, so edge bins count only for the part inside it and
+     * the result does not depend on the frequency grid. NaN if not covered.
+     */
     fun bandRms(lo: Double, hi: Double): Double {
         if (!covers(lo, hi))
             return Double.NaN
         var sum = 0.0
         for (i in 0 until size)
-            if (freq[i] in lo..hi)
-                sum += power[i]
-        return Math.sqrt(sum * binWidth)
+            sum += power[i] * overlap(i, lo, hi)
+        return Math.sqrt(sum)
     }
 
     companion object {
@@ -118,6 +128,6 @@ class Spectrum(
                 sum += power[k]
             out[i] = sum / (b - a + 1)
         }
-        return Spectrum(freq, out, segments)
+        return Spectrum(freq, out, segments, windowLength, binWidth)
     }
 }

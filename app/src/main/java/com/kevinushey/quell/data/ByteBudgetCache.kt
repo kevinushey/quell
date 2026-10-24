@@ -32,6 +32,11 @@ class ByteBudgetCache<K, V>(private val budgetBytes: Long, private val sizeOf: (
         map.remove(key)?.let { bytes -= sizeOf(it) }
     }
 
+    fun clear() {
+        map.clear()
+        bytes = 0L
+    }
+
     fun removeIf(predicate: (K) -> Boolean) {
         val it = map.entries.iterator()
         while (it.hasNext()) {

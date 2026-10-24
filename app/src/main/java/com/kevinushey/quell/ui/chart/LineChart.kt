@@ -8,6 +8,7 @@ import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,6 +54,9 @@ fun LineChart(
     showZeroLine: Boolean = false,
     /** Changing this key resets zoom and crosshair. */
     viewportKey: Any? = null,
+    /** Data extents to use instead of those of `series`, for callers that reload detail per viewport. */
+    fixedBounds: Viewport? = null,
+    onViewportChange: ((Viewport) -> Unit)? = null,
     xValueFormatter: (Double) -> String = { Axis.formatValue(it) },
     yValueFormatter: (Double) -> String = { Axis.formatValue(it) },
 ) {
@@ -62,8 +66,12 @@ fun LineChart(
     val titleStyle = TextStyle(color = colors.onSurface, fontSize = 11.sp)
     val readoutStyle = TextStyle(color = colors.onSurface, fontSize = 11.sp)
 
-    val dataBounds = remember(series, xScale) { computeBounds(series, xScale) }
+    val seriesBounds = remember(series, xScale) { computeBounds(series, xScale) }
+    val dataBounds = fixedBounds ?: seriesBounds
     var viewport by remember(viewportKey, dataBounds) { mutableStateOf(dataBounds) }
+    LaunchedEffect(viewport) {
+        viewport?.let { onViewportChange?.invoke(it) }
+    }
     var crosshairX by remember(viewportKey) { mutableStateOf<Double?>(null) }
     var plotRect by remember { mutableStateOf(Rect.Zero) }
 
@@ -306,7 +314,7 @@ private fun toDomain(x: Double, scale: AxisScale): Double =
 private fun fromDomain(v: Double, scale: AxisScale): Double =
     if (scale == AxisScale.LOG) 10.0.pow(v) else v
 
-private fun computeBounds(series: List<ChartSeries>, xScale: AxisScale): Viewport? {
+internal fun computeBounds(series: List<ChartSeries>, xScale: AxisScale): Viewport? {
     var xMin = Double.POSITIVE_INFINITY
     var xMax = Double.NEGATIVE_INFINITY
     var yMin = Double.POSITIVE_INFINITY

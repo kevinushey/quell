@@ -124,6 +124,9 @@ class DatasetRepository(private val context: Context) {
         }
     }
 
+    /** Drops cached samples so a large save or import has the heap to itself; they reload on demand. */
+    suspend fun releaseSamples() = mutex.withLock { cache.clear() }
+
     /** Reads under the mutex so a concurrent delete() cannot remove the file mid-read. */
     suspend fun series(id: String): TimeSeries? = withContext(Dispatchers.IO) {
         mutex.withLock {

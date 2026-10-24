@@ -14,6 +14,11 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import kotlinx.coroutines.delay
+import com.kevinushey.quell.ui.chart.computeBounds
+import com.kevinushey.quell.ui.chart.AxisScale
+import com.kevinushey.quell.ui.chart.Viewport
+import androidx.compose.runtime.remember
 import com.kevinushey.quell.dsp.Decimate
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -58,8 +63,19 @@ fun WaveformScreen(vm: MainViewModel, exportHost: ChartExportHost) {
         return
     }
 
-    val series by produceState<List<ChartSeries>>(emptyList(), visible.map { it.id to it.colorIndex to it.name }, channel, removeMean) {
-        value = withContext(Dispatchers.Default) { buildSeries(vm, visible, channel, removeMean) }
+    // The chart holds a bounded envelope of whatever time range is on screen. Zooming narrows
+    // the window and the envelope is rebuilt from the underlying samples at finer resolution.
+    val visibleKey = visible.map { it.id to it.colorIndex to it.name }
+    var window by remember(visibleKey, channel, removeMean) { mutableStateOf<Viewport?>(null) }
+    var fullBounds by remember(visibleKey, channel, removeMean) { mutableStateOf<Viewport?>(null) }
+    val series by produceState<List<ChartSeries>>(emptyList(), visibleKey, channel, removeMean, window) {
+        val w = window
+        if (w != null)
+            delay(120)
+        val built = withContext(Dispatchers.Default) { buildSeries(vm, visible, channel, removeMean, w) }
+        if (w == null)
+            fullBounds = computeBounds(built, AxisScale.LINEAR)
+        value = built
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -94,6 +110,8 @@ fun WaveformScreen(vm: MainViewModel, exportHost: ChartExportHost) {
                 yLabel = if (removeMean) "Acceleration minus mean (m/s^2)" else "Acceleration (m/s^2)",
                 verticalMarkers = trimMarkers,
                 viewportKey = listOf(channel, removeMean, visible.map { it.id }),
+                fixedBounds = fullBounds,
+                onViewportChange = { vp -> window = if (fullBounds == null || vp == fullBounds) null else vp },
                 xValueFormatter = { "%.3f s".format(Locale.US, it) },
                 yValueFormatter = { "%.3f".format(Locale.US, it) },
             )
@@ -101,7 +119,13 @@ fun WaveformScreen(vm: MainViewModel, exportHost: ChartExportHost) {
     }
 }
 
-private suspend fun buildSeries(vm: MainViewModel, visible: List<DatasetMeta>, channel: Channel, removeMean: Boolean): List<ChartSeries> {
+private suspend fun buildSeries(
+    vm: MainViewModel,
+    visible: List<DatasetMeta>,
+    channel: Channel,
+    removeMean: Boolean,
+    window: Viewport?,
+): List<ChartSeries> {
     val out = ArrayList<ChartSeries>()
     for (meta in visible) {
         val s = vm.series(meta.id) ?: continue
@@ -112,16 +136,39 @@ private suspend fun buildSeries(vm: MainViewModel, visible: List<DatasetMeta>, c
             else -> s.magnitude()
         }
         val t0 = s.time.firstOrNull() ?: 0.0
-        val time = DoubleArray(s.size) { s.time[it] - t0 }
-        val values = if (removeMean) {
-            val mean = raw.average()
-            DoubleArray(raw.size) { raw[it] - mean }
-        } else {
-            raw
+        // The mean is a property of the whole run, not of the window on screen.
+        val mean = if (removeMean) raw.average() else 0.0
+
+        // Only the visible span (plus a margin for panning) is materialized, then bounded by decimation.
+        var from = 0
+        var to = s.size
+        if (window != null) {
+            val margin = window.width * 0.25
+            from = lowerBound(s.time, t0 + window.xMin - margin)
+            to = lowerBound(s.time, t0 + window.xMax + margin).coerceAtMost(s.size)
+            if (to - from < 2) {
+                from = (from - 1).coerceAtLeast(0)
+                to = (to + 1).coerceAtMost(s.size)
+            }
         }
-        // Retain a bounded min/max envelope per run, not the full arrays, so many long runs cannot exhaust the heap.
+        val time = DoubleArray(to - from) { s.time[from + it] - t0 }
+        val values = DoubleArray(to - from) { raw[from + it] - mean }
         val d = Decimate.minMax(time, values)
         out.add(ChartSeries(meta.id, meta.name, seriesColor(meta.colorIndex), d.time, d.values, strokeWidthDp = 1.2f))
     }
     return out
+}
+
+/** First index whose time is >= target. */
+private fun lowerBound(arr: DoubleArray, target: Double): Int {
+    var lo = 0
+    var hi = arr.size
+    while (lo < hi) {
+        val mid = (lo + hi) ushr 1
+        if (arr[mid] < target)
+            lo = mid + 1
+        else
+            hi = mid
+    }
+    return lo
 }
