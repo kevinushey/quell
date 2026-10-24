@@ -124,6 +124,10 @@ class AnalysisEdgeCaseTest {
         assertEquals(1.0, Welch.effectiveSmoothingBins(1, 1024, WindowType.HANN), 0.0)
         // A rectangular window leaves bins uncorrelated, so smoothing counts in full.
         assertEquals(3.0, Welch.effectiveSmoothingBins(3, 1024, WindowType.RECTANGULAR), 1e-6)
+        // Heavy zero padding correlates neighbouring bins, so the same smoothing is worth less.
+        val padded = Welch.effectiveSmoothingBins(15, 8192, WindowType.RECTANGULAR, samples = 256)
+        assertTrue("got $padded", padded < 2.0)
+        assertEquals(256, Welch.psd(DoubleArray(256) { sin(it * 0.3) }, 400.0, 8192).windowLength)
     }
 
     @Test

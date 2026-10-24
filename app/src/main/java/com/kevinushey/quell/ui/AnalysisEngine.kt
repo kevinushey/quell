@@ -112,7 +112,7 @@ object AnalysisEngine {
         val peaks = if (s.showPeaks) Peaks.find(normalized.freq, display, s.peakCount, minSeparationBins = separation) else emptyList()
         val binsCombined = Spectrum.effectiveSmoothingBins(restricted.size, s.smoothingBins)
         val averages = Welch.effectiveSegments(raw.segments, s.segmentSize, s.window, s.overlap) *
-            Welch.effectiveSmoothingBins(binsCombined, s.segmentSize, s.window)
+            Welch.effectiveSmoothingBins(binsCombined, s.segmentSize, s.window, raw.windowLength.takeIf { it > 0 } ?: s.segmentSize)
         return SpectrumResult(meta, raw, normalized, display, peaks, sampleRate, refScale, refMissing)
             .also { it.effectiveAverages = averages.coerceAtLeast(1.0) }
     }

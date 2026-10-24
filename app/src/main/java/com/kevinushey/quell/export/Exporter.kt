@@ -43,7 +43,8 @@ object Exporter {
                     w.write(",\"${label.replace("\"", "\"\"")}\"")
                 }
                 w.write("\n")
-                val grid = results.first().normalized.freq
+                // Union of every run's bins, so no run's coverage depends on which dataset is listed first.
+                val grid = results.flatMap { it.normalized.freq.asList() }.distinct().sorted().toDoubleArray()
                 val aligned = results.map { r ->
                     if (r.normalized.freq.contentEquals(grid)) r.display
                     else {

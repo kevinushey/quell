@@ -44,6 +44,8 @@ class Recorder(context: Context) : SensorEventListener {
     private var startNanos = 0L
     private var startedAt: Date? = null
     private var lastStatusPush = 0L
+    /** Median delivery rate over the most recent samples; what the resampler's grid will use. */
+    private var recentRate = 0.0
 
     val minDelayMicros: Int get() = sensor?.minDelay ?: 0
 
@@ -87,19 +89,20 @@ class Recorder(context: Context) : SensorEventListener {
     }
 
     override fun onSensorChanged(event: SensorEvent) {
-        if (count >= MAX_SAMPLES) {
-            // Beyond this the analysis would refuse the run anyway; keep what we have.
+        if (startNanos == 0L)
+            startNanos = event.timestamp
+        val t = (event.timestamp - startNanos) / 1e9
+        if (count >= MAX_SAMPLES || projectedLength(t) > MAX_SAMPLES) {
+            // The resampled grid (span times median rate) is what the analysis bounds, not the
+            // event count; a timestamp gap makes it longer. Stop here and keep what we have.
             manager.unregisterListener(this)
             _status.value = _status.value.copy(recording = false, limitReached = true, sampleCount = count)
             return
         }
-        if (startNanos == 0L)
-            startNanos = event.timestamp
         if (count == times.size) {
             val n = count * 2
             times = times.copyOf(n); xs = xs.copyOf(n); ys = ys.copyOf(n); zs = zs.copyOf(n)
         }
-        val t = (event.timestamp - startNanos) / 1e9
         times[count] = t
         xs[count] = event.values[0].toDouble()
         ys[count] = event.values[1].toDouble()
@@ -109,6 +112,11 @@ class Recorder(context: Context) : SensorEventListener {
         val now = System.nanoTime()
         if (now - lastStatusPush > 100_000_000L) {
             lastStatusPush = now
+            if (count > RATE_WINDOW) {
+                val deltas = DoubleArray(RATE_WINDOW - 1) { times[count - 1 - it] - times[count - 2 - it] }.filter { it > 0 }.sorted()
+                if (deltas.isNotEmpty())
+                    recentRate = 1.0 / deltas[deltas.size / 2]
+            }
             _status.value = _status.value.copy(
                 elapsedSec = t,
                 sampleCount = count,
@@ -120,9 +128,16 @@ class Recorder(context: Context) : SensorEventListener {
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
 
+    /** Samples the resampler would need for the capture so far, mirroring Resampler.resampledLength. */
+    private fun projectedLength(spanSec: Double): Double {
+        val running = if (spanSec > 0.5) (count - 1) / spanSec else 0.0
+        return spanSec * maxOf(recentRate, running) + 1
+    }
+
     companion object {
         /** Same bound the parser and resampler enforce, so a saved recording is always analyzable untrimmed. */
         val MAX_SAMPLES = Resampler.MAX_SAMPLES.toInt()
+        private const val RATE_WINDOW = 1024
     }
 
     /** Everything captured so far. */

@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.kevinushey.quell.QuellApp
 import com.kevinushey.quell.data.AnalysisSettings
 import com.kevinushey.quell.data.AppSettings
+import com.kevinushey.quell.data.ByteBudgetCache
 import com.kevinushey.quell.data.DatasetMeta
 import com.kevinushey.quell.data.ImportException
 import com.kevinushey.quell.data.ParsedRun
@@ -64,7 +65,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Keyed by dataset id plus trim window, so editing the window recomputes. */
     private data class ResampleKey(val id: String, val trimStart: Double, val trimEnd: Double)
 
-    private val resampledCache = HashMap<ResampleKey, Resampled>()
+    private val resampledCache = ByteBudgetCache<ResampleKey, Resampled>(ByteBudgetCache.defaultBudget()) { it.size.toLong() * 4 * 8 }
     private val psdCache = LinkedHashMap<PsdKey, Spectrum>()
     private val cacheMutex = Mutex()
 
@@ -194,7 +195,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         launchReporting("delete dataset") {
             repo.delete(id)
             cacheMutex.withLock {
-                resampledCache.keys.removeAll { it.id == id }
+                resampledCache.removeIf { it.id == id }
                 psdCache.keys.removeAll { it.id == id }
                 tapCache.keys.removeAll { it.id == id }
             }
@@ -247,8 +248,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val s = repo.series(meta.id) ?: return null
         val r = analyzeOrReport(meta) { Resampled.from(s.slice(meta.trimStart, meta.effectiveTrimEnd)) } ?: return null
         cacheMutex.withLock {
-            resampledCache.keys.removeAll { it.id == meta.id && it != key }
-            resampledCache[key] = r
+            resampledCache.removeIf { it.id == meta.id && it != key }
+            resampledCache.put(key, r)
         }
         return r
     }

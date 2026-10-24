@@ -36,18 +36,21 @@ object Welch {
      * bins is worth. Windowing correlates neighbouring bins (for Hann, about
      * 0.44 for adjacent bins), so smoothing buys less than one per bin.
      */
-    fun effectiveSmoothingBins(bins: Int, segmentSize: Int, window: WindowType): Double {
+    fun effectiveSmoothingBins(bins: Int, segmentSize: Int, window: WindowType, samples: Int = segmentSize): Double {
         if (bins <= 1)
             return 1.0
         val n = segmentSize
-        val w2 = window.coefficients(n).map { it * it }
+        // Zero padding beyond `samples` widens the window's spectral lobe, so fewer real samples
+        // mean neighbouring bins are more correlated and smoothing buys less.
+        val count = samples.coerceIn(1, n)
+        val w2 = window.coefficients(count).map { it * it }
         val energy = w2.sum()
 
         var sum = 0.0
         for (k in 1 until bins) {
             var re = 0.0
             var im = 0.0
-            for (i in 0 until n) {
+            for (i in 0 until count) {
                 val phase = 2.0 * Math.PI * k * i / n
                 re += w2[i] * Math.cos(phase)
                 im += w2[i] * Math.sin(phase)
@@ -114,6 +117,6 @@ object Welch {
             val oneSided = if (k == 0 || k == half) 1.0 else 2.0
             acc[k] *= scale * oneSided
         }
-        return Spectrum(freq, acc, segments)
+        return Spectrum(freq, acc, segments, count)
     }
 }

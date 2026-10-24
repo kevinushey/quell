@@ -137,6 +137,21 @@ class ParserTest {
     }
 
     @Test
+    fun zipSurvivesMalformedAuxiliaryTable() {
+        val bytes = ByteArrayOutputStream()
+        ZipOutputStream(bytes).use { zip ->
+            zip.putNextEntry(ZipEntry("junk.csv"))
+            zip.write("x".repeat(AccelerometerParser.MAX_LINE_CHARS + 10).toByteArray())
+            zip.closeEntry()
+            zip.putNextEntry(ZipEntry("Raw Data.csv"))
+            zip.write(phyphoxCsv(100).toByteArray())
+            zip.closeEntry()
+        }
+        val run = AccelerometerParser.parseZip(bytes.toByteArray().inputStream())
+        assertEquals(100, run.series.size)
+    }
+
+    @Test
     fun detectsZipByContentWithoutExtension() {
         val bytes = ByteArrayOutputStream()
         ZipOutputStream(bytes).use { zip ->

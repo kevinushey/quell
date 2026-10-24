@@ -14,6 +14,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -63,13 +64,35 @@ fun DiffScreen(vm: MainViewModel, exportHost: ChartExportHost) {
     // A run that could not be reference-band normalized is not on the same scale; keep it out.
     val results = state.results.filter { !it.referenceBandMissing }
     val excluded = state.results.filter { it.referenceBandMissing }
-    if (results.size < 2) {
-        EmptyState(
-            icon = Icons.Default.Compare,
-            title = "Need two or more comparable datasets",
-            message = "Enable at least two datasets on the Datasets tab. The diff view subtracts a reference run from each of the others, in dB, so a flat line at zero means identical spectra." +
-                if (excluded.isEmpty()) "" else "\n\nNot comparable (reference band not covered): ${excluded.joinToString { it.meta.name }}.",
+    if (showOptions) {
+        AnalysisOptionsSheet(
+            settings = settings,
+            sampleRateHint = state.results.firstOrNull()?.sampleRate,
+            useMph = appSettings.useMph,
+            onChange = vm::updateAnalysis,
+            onDismiss = { showOptions = false },
         )
+    }
+
+    if (results.size < 2) {
+        // Keep the normalization and band controls reachable: they are usually how the user gets out of this state.
+        Column(Modifier.fillMaxSize()) {
+            QuickChips(settings = settings, onChange = vm::updateAnalysis, showScale = false)
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                EmptyState(
+                    icon = Icons.Default.Compare,
+                    title = "Need two or more comparable datasets",
+                    message = "Enable at least two datasets on the Datasets tab. The diff view subtracts a reference run from each of the others, in dB, so a flat line at zero means identical spectra." +
+                        if (excluded.isEmpty()) "" else "\n\nNot comparable (reference band not covered): ${excluded.joinToString { it.meta.name }}. Change the normalization or the reference band below.",
+                )
+            }
+            AnalysisBar(
+                settings = settings,
+                sampleRateHint = state.results.firstOrNull()?.sampleRate,
+                onChange = vm::updateAnalysis,
+                onOpenOptions = { showOptions = true },
+            )
+        }
         return
     }
 
@@ -137,16 +160,6 @@ fun DiffScreen(vm: MainViewModel, exportHost: ChartExportHost) {
         LazyColumn(Modifier.fillMaxWidth().weight(0.7f), contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             items(comparisons, key = { it.other.meta.id }) { c -> ComparisonCard(c, reference.meta.name, unit) }
         }
-    }
-
-    if (showOptions) {
-        AnalysisOptionsSheet(
-            settings = settings,
-            sampleRateHint = results.firstOrNull()?.sampleRate,
-            useMph = appSettings.useMph,
-            onChange = vm::updateAnalysis,
-            onDismiss = { showOptions = false },
-        )
     }
 }
 

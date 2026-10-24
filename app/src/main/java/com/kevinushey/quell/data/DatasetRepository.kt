@@ -35,7 +35,7 @@ class DatasetRepository(private val context: Context) {
     private val dir: File = File(context.filesDir, "datasets").apply { mkdirs() }
     private val indexFile = File(dir, "index.json")
     private val mutex = Mutex()
-    private val cache = HashMap<String, TimeSeries>()
+    private val cache = ByteBudgetCache<String, TimeSeries>(ByteBudgetCache.defaultBudget()) { it.size.toLong() * 4 * 8 }
     private var loaded = false
 
     private val _datasets = MutableStateFlow<List<DatasetMeta>>(emptyList())
@@ -118,7 +118,7 @@ class DatasetRepository(private val context: Context) {
                 file.delete()
                 throw e
             }
-            cache[id] = series
+            cache.put(id, series)
             _datasets.value = next
             meta
         }
@@ -132,7 +132,7 @@ class DatasetRepository(private val context: Context) {
             if (!file.exists())
                 return@withLock null
             try {
-                readSeries(file).also { cache[id] = it }
+                readSeries(file).also { cache.put(id, it) }
             } catch (e: Exception) {
                 _problems.tryEmit("Could not read the samples of a dataset: ${e.message ?: e.javaClass.simpleName}")
                 null

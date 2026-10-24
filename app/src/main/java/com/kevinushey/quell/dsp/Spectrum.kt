@@ -1,7 +1,13 @@
 package com.kevinushey.quell.dsp
 
 /** One-sided spectrum. `power` is in units^2/Hz unless normalized. */
-class Spectrum(val freq: DoubleArray, val power: DoubleArray, val segments: Int = 0) {
+class Spectrum(
+    val freq: DoubleArray,
+    val power: DoubleArray,
+    val segments: Int = 0,
+    /** Real samples under the window per segment (0 = unknown, assume the FFT length). */
+    val windowLength: Int = 0,
+) {
     init {
         require(freq.size == power.size)
     }

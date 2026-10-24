@@ -54,17 +54,16 @@ object AccelerometerParser {
                         // like raw samples. Score from the header alone and stream the rows, so a
                         // large table never has to exist in memory as text.
                         val lines = LineReader(InputStreamReader(zip, Charsets.UTF_8))
-                        val header = lines.readLine() ?: ""
-                        lines.pushBack(header)
-                        val score = csvScore(name, header)
-                        if (score > seriesScore) {
-                            runCatching { parseCsvLines(lines) }
-                                .onFailure { lastError = it.message }
-                                .getOrNull()?.let {
-                                    series = it
-                                    seriesScore = score
-                                }
-                        }
+                        // Header peek included: a malformed auxiliary table must not sink the whole import.
+                        runCatching {
+                            val header = lines.readLine() ?: ""
+                            lines.pushBack(header)
+                            val score = csvScore(name, header)
+                            if (score > seriesScore) {
+                                series = parseCsvLines(lines)
+                                seriesScore = score
+                            }
+                        }.onFailure { lastError = it.message }
                     }
                 }
                 zip.closeEntry()

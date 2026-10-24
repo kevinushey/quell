@@ -93,7 +93,8 @@ fun LineChart(
     Canvas(
         modifier = modifier
             .fillMaxSize()
-            .pointerInput(dataBounds) {
+            // Keyed on viewportKey too: a new key replaces the viewport state, and the handlers must capture it.
+            .pointerInput(dataBounds, viewportKey) {
                 // Axis-aware pinch: the zoom factor is taken separately from the horizontal and
                 // vertical finger separation, so a horizontal pinch rescales only the x axis.
                 val slop = viewConfiguration.touchSlop
@@ -144,7 +145,7 @@ fun LineChart(
                     }
                 }
             }
-            .pointerInput(dataBounds) {
+            .pointerInput(dataBounds, viewportKey) {
                 detectTapGestures(
                     onDoubleTap = {
                         viewport = dataBounds

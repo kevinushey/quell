@@ -144,16 +144,20 @@ fun DamperScreen(vm: MainViewModel, exportHost: ChartExportHost) {
         }
 
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            if (rows.isNotEmpty()) {
+            // Runs that could not be reference-band normalized are on an absolute scale; keep them off the normalized axis.
+            val chartRows = rows.filter { !it.result.referenceBandMissing }
+            val unscaled = rows.filter { it.result.referenceBandMissing }
+            if (chartRows.isNotEmpty()) {
                 item {
-                val chartSeries = rows.map { r ->
+                Column {
+                val chartSeries = chartRows.map { r ->
                     val span = hi - lo
                     val sub = r.spectrum.restrictTo((lo - span).coerceAtLeast(0.0), hi + span)
                     ChartSeries(r.result.meta.id, r.result.meta.name, seriesColor(r.result.meta.colorIndex), sub.freq, DoubleArray(sub.size) { Normalization.toDb(sub.power[it]) })
                 }
                 val edgeColor = MaterialTheme.colorScheme.tertiary
                 ChartCard(
-                    legend = rows.map { LegendItem(it.result.meta.name, seriesColor(it.result.meta.colorIndex)) },
+                    legend = chartRows.map { LegendItem(it.result.meta.name, seriesColor(it.result.meta.colorIndex)) },
                     exportHost = exportHost,
                     modifier = Modifier.fillMaxWidth().height(260.dp),
                     title = "Target band $bandLabel",
@@ -168,6 +172,15 @@ fun DamperScreen(vm: MainViewModel, exportHost: ChartExportHost) {
                         xValueFormatter = { formatHz(it) },
                         yValueFormatter = { "%.1f dB".format(Locale.US, it) },
                     )
+                }
+                if (unscaled.isNotEmpty()) {
+                    Text(
+                        "Not plotted (reference band not covered): ${unscaled.joinToString { it.result.meta.name }}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                    )
+                }
                 }
                 }
             }
