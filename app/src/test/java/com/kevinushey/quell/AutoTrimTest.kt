@@ -59,6 +59,15 @@ class AutoTrimTest {
     }
 
     @Test
+    fun levelsAreAmplitudeDecibels() {
+        // A tenfold RMS step is 20 dB in the app's convention, well past the band, so it splits the run.
+        val (t, m) = run(listOf(20.0 to 0.05, 30.0 to 0.5))
+        val w = AutoTrim.steadyWindow(t, m)!!
+        assertEquals(20.0, w.start, 1.0)
+        assertEquals(50.0, w.end, 1.0)
+    }
+
+    @Test
     fun aSteadyRunIsKeptWhole() {
         val (t, m) = run(listOf(30.0 to 0.5))
         val w = AutoTrim.steadyWindow(t, m)!!

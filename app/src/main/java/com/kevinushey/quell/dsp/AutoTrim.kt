@@ -20,11 +20,11 @@ data class SteadyWindow(val start: Double, val end: Double, val rangeDb: Double)
  */
 object AutoTrim {
 
-    /** Width of the level band a steady stretch may wander over. */
-    const val BAND_DB = 10.0
+    /** Width of the level band a steady stretch may wander over: a factor of four in RMS. */
+    const val BAND_DB = 12.0
 
     /** How far below the run's loud level (75th percentile) a stretch may sit and still count as the drive. */
-    const val FLOOR_BELOW_LOUD_DB = 6.0
+    const val FLOOR_BELOW_LOUD_DB = 10.0
 
     /** Shortest stretch worth suggesting, seconds. */
     const val MIN_SECONDS = 5.0
@@ -41,7 +41,7 @@ object AutoTrim {
         if (total < 2 * MIN_SECONDS)
             return null
 
-        // Short-term RMS of the magnitude about its mean, in dB, one value per cell.
+        // Short-term RMS of the magnitude about its mean, in dB (20 log10 of an amplitude, as elsewhere in the app), one value per cell.
         val cell = maxOf(CELL_SECONDS, total / MAX_CELLS)
         val cells = (total / cell).toInt().coerceAtLeast(1)
         val mean = magnitude.average()
@@ -54,7 +54,7 @@ object AutoTrim {
             count[c]++
         }
         val level = DoubleArray(cells) { c ->
-            if (count[c] == 0) Double.NaN else 10 * log10(sqrt(sum[c] / count[c]).coerceAtLeast(1e-9))
+            if (count[c] == 0) Double.NaN else 20 * log10(sqrt(sum[c] / count[c]).coerceAtLeast(1e-9))
         }
         // A cell without samples (a delivery gap) breaks any stretch.
         val filled = level.indices.filter { !level[it].isNaN() }

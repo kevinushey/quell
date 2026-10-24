@@ -462,7 +462,11 @@ private fun TrimDialog(vm: MainViewModel, meta: DatasetMeta, onDismiss: () -> Un
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
                         enabled = steady != null,
-                        onClick = { steady?.let { range = it.start.toFloat()..it.end.toFloat() } },
+                        onClick = {
+                            val st = steady ?: return@OutlinedButton
+                            // "The whole run looks steady" means the whole run, not the whole run minus a cell.
+                            range = if (st.coversAll(duration)) 0f..duration.toFloat() else st.start.toFloat()..st.end.toFloat()
+                        },
                     ) { Text("Keep the steady part") }
                     Text(
                         when {

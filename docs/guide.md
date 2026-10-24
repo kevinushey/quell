@@ -67,7 +67,7 @@ spectrum as one CSV.
 A drive recording usually starts before the drive does. On the Data tab, each
 run's menu has "Trim time range": drag the handles over the envelope, or press
 "Keep the steady part" and the app finds the longest stretch whose vibration
-level stayed within 10 dB, which leaves the door slam and the idling outside.
+level stayed within 12 dB, which leaves the door slam and the idling outside.
 Every tab uses the trimmed window from then on.
 
 ## Finding the problem mode

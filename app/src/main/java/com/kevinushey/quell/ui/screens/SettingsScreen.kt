@@ -74,6 +74,13 @@ fun SettingsScreen(vm: MainViewModel, onOpenGuide: () -> Unit) {
             sync.lastError?.let {
                 Text("Last error: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
+            if (sync.frozenByDegradedIndex) {
+                Text(
+                    "This phone's dataset index could not be fully read, so the folder's copies are being kept as they are. Use \"Restore from folder\" to bring them back.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             if (sync.damagedCount > 0) {
                 Text(
                     "${sync.damagedCount} file${if (sync.damagedCount == 1) "" else "s"} in the folder could not be read as a dataset and will be ignored.",

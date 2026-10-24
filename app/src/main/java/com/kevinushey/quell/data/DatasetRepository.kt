@@ -45,6 +45,14 @@ class DatasetRepository(private val context: Context) {
     private val _sweeps = MutableStateFlow<List<Sweep>>(emptyList())
     val sweeps: StateFlow<List<Sweep>> = _sweeps
 
+    /**
+     * True when the dataset list is known to be incomplete: the index could not
+     * be read, or entries were dropped because their samples were missing. A
+     * mirror must not treat the missing datasets as deleted.
+     */
+    private val _degraded = MutableStateFlow(false)
+    val degraded: StateFlow<Boolean> = _degraded
+
     /** Problems that lost or endangered data, for the UI to surface. */
     // Replayed: the store may load (and complain) from the application scope before any screen listens.
     private val _problems = MutableSharedFlow<String>(replay = 4, extraBufferCapacity = 4)
@@ -78,9 +86,15 @@ class DatasetRepository(private val context: Context) {
             if (indexFile.exists())
                 indexFile.renameTo(kept)
             _problems.tryEmit("The dataset index could not be read. A copy was kept as ${kept.name}; the datasets are still on disk.")
+            _degraded.value = true
             return
         }
-        _datasets.value = decoded.filter { File(dir, "${it.id}.bin").exists() }
+        val present = decoded.filter { File(dir, "${it.id}.bin").exists() }
+        if (present.size != decoded.size) {
+            _problems.tryEmit("${decoded.size - present.size} dataset(s) in the index have no sample file and were left out.")
+            _degraded.value = true
+        }
+        _datasets.value = present
     }
 
     private fun loadSweepsLocked() {

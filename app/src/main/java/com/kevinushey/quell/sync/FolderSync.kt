@@ -37,6 +37,8 @@ data class SyncStatus(
     val foreignCount: Int = 0,
     /** Remote .bin files that failed validation on restore; they cannot be restored and do not block the mirror. */
     val damagedCount: Int = 0,
+    /** The local index could not be fully read, so the mirror only adds files until that is sorted out. */
+    val frozenByDegradedIndex: Boolean = false,
 )
 
 /** What a restore did, for the caller to report. */
@@ -96,6 +98,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                     lastError = null,
                     foreignCount = outcome.foreign,
                     damagedCount = outcome.damaged,
+                    frozenByDegradedIndex = outcome.degraded,
                 )
             } catch (e: CancellationException) {
                 throw e
@@ -105,7 +108,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         }
     }
 
-    private class MirrorOutcome(val mirrored: Int, val foreign: Int, val damaged: Int)
+    private class MirrorOutcome(val mirrored: Int, val foreign: Int, val damaged: Int, val degraded: Boolean)
 
     private fun mirror(tree: Uri, csv: Boolean): MirrorOutcome {
         val remote = listChildren(tree)
@@ -127,6 +130,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             sweepsHash,
             sweepsBytes.size.toLong(),
             csv,
+            degraded = repo.degraded.value,
         )
 
         var mirrored = state.mirrored.toMutableSet()
@@ -171,7 +175,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
 
         // Every local dataset with a complete remote .bin counts as mirrored, whoever wrote it.
         mirrored = (mirrored + metas.map { it.id }.filter { id -> id in plan.binsToWrite || remote["$id.bin"]?.let { it.size < 0 || it.size == localSizes[id] } == true }).toMutableSet()
-        val frozen = plan.foreignIds.isNotEmpty()
+        val frozen = plan.foreignIds.isNotEmpty() || plan.frozenByDegradedIndex
         saveState(
             state.copy(
                 mirrored = mirrored,
@@ -181,7 +185,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                 damaged = state.damaged.filter { "$it.bin" in remote }.toSet(),
             )
         )
-        return MirrorOutcome(metas.count { it.id in mirrored }, plan.foreignIds.size, state.damaged.count { "$it.bin" in remote })
+        return MirrorOutcome(metas.count { it.id in mirrored }, plan.foreignIds.size, state.damaged.count { "$it.bin" in remote }, plan.frozenByDegradedIndex)
     }
 
     /** Dataset ids the folder's own index lists; empty when there is none or it cannot be read. */

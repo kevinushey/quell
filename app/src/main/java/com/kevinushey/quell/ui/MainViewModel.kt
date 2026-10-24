@@ -103,6 +103,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _ready.value = true
         }
         viewModelScope.launch {
+            // Replayed problems arrive synchronously on collect; wait until the snackbar host is subscribed.
+            _messages.subscriptionCount.first { it > 0 }
             repo.problems.collect {
                 _messages.emit(it)
                 repo.problemsShown()

@@ -56,14 +56,16 @@ class MarkdownTest {
         val text = file.readText()
         val blocks = Markdown.parse(text)
         assertTrue(blocks.first() is MdBlock.Heading)
-        val words = text.lines().filter { it.isNotBlank() }.sumOf { it.trim().removePrefix("#").removePrefix("- ").split(' ').size }
-        val kept = blocks.sumOf {
+        // Strip the markers line by line; the blocks must carry exactly that text, in order.
+        val marker = Regex("^(#{1,3}\\s+|- |\\d+\\. )")
+        val expected = text.lines().map { it.trim().replace(marker, "") }.filter { it.isNotBlank() }.joinToString(" ")
+        val actual = blocks.joinToString(" ") {
             when (it) {
-                is MdBlock.Heading -> it.text.split(' ').size
-                is MdBlock.Paragraph -> it.text.split(' ').size
-                is MdBlock.ListItem -> it.text.split(' ').size
+                is MdBlock.Heading -> it.text
+                is MdBlock.Paragraph -> it.text
+                is MdBlock.ListItem -> it.text
             }
         }
-        assertTrue("kept $kept of $words words", kept >= words - blocks.size)
+        assertEquals(expected, actual)
     }
 }

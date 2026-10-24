@@ -31,6 +31,8 @@ class SyncPlan(
     val writeSweeps: Boolean,
     /** Datasets in the folder's index that are neither local nor ours: someone else's store, left untouched. */
     val foreignIds: Set<String>,
+    /** The local list is known to be incomplete, so nothing was deleted and the folder's index was kept. */
+    val frozenByDegradedIndex: Boolean = false,
 ) {
     val isEmpty: Boolean get() = binsToWrite.isEmpty() && csvToWrite.isEmpty() && filesToDelete.isEmpty() && !writeIndex && !writeSweeps
 
@@ -54,6 +56,8 @@ class SyncPlan(
             sweepsHash: String,
             sweepsSize: Long,
             csv: Boolean,
+            /** The local index could not be fully read; absence from the local list means nothing. */
+            degraded: Boolean = false,
         ): SyncPlan {
             val local = localIds.toSet()
             fun complete(name: String, expected: Long?): Boolean {
@@ -66,6 +70,9 @@ class SyncPlan(
             val foreign = remoteIndexIds.filter { it !in local && it !in state.mirrored && it !in state.damaged && "$it.bin" in remote }.toSet()
             if (foreign.isNotEmpty())
                 return SyncPlan(bins, csvs, emptyList(), emptySet(), writeIndex = false, writeSweeps = false, foreignIds = foreign)
+            // With the local index lost, the folder may be the only complete copy: write new bins, touch nothing else.
+            if (degraded)
+                return SyncPlan(bins, csvs, emptyList(), emptySet(), writeIndex = false, writeSweeps = false, foreignIds = emptySet(), frozenByDegradedIndex = true)
 
             val gone = state.mirrored.filter { it !in local }
             val deletions = ArrayList<String>()

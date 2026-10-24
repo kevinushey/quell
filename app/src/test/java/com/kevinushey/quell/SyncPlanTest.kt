@@ -24,7 +24,23 @@ class SyncPlanTest {
         localSizes: Map<String, Long> = emptyMap(),
         indexSize: Long = 100,
         sweepsSize: Long = 10,
-    ) = SyncPlan.plan(local, localSizes, remote, indexIds, state, indexHash, indexSize, sweepsHash, sweepsSize, csv)
+        degraded: Boolean = false,
+    ) = SyncPlan.plan(local, localSizes, remote, indexIds, state, indexHash, indexSize, sweepsHash, sweepsSize, csv, degraded)
+
+    @Test
+    fun aLostLocalIndexDeletesNothing() {
+        // The index could not be read: the local list is empty, the mirrored set is not. The folder is the copy.
+        val r = remote("a.bin", "b.bin", "index.json", "sweeps.json")
+        val state = SyncState(mirrored = setOf("a", "b"), indexHash = "i1", sweepsHash = "s1")
+        val p = plan(emptyList(), r, state, indexIds = listOf("a", "b"), indexHash = "empty", degraded = true)
+        assertTrue(p.filesToDelete.isEmpty())
+        assertTrue(p.releasedIds.isEmpty())
+        assertFalse(p.writeIndex)
+        assertFalse(p.writeSweeps)
+        assertTrue(p.frozenByDegradedIndex)
+        // A new recording made meanwhile still gets its file written.
+        assertEquals(listOf("new"), plan(listOf("new"), r, state, indexIds = listOf("a", "b"), indexHash = "x", degraded = true).binsToWrite)
+    }
 
     @Test
     fun firstPassWritesEverything() {
