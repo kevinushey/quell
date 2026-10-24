@@ -31,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.kevinushey.quell.data.AnalysisSettings
@@ -201,10 +202,12 @@ private fun <T> ChipRow(options: List<T>, selected: T, label: (T) -> String, onS
 
 @Composable
 private fun NumberField(label: String, value: Double, modifier: Modifier = Modifier, onCommit: (Double) -> Unit) {
-    // Keep the raw text local so partially typed numbers ("0.") are not rewritten under the cursor.
+    // Keep the raw text local so partially typed numbers ("0.") are not rewritten under the cursor, even when
+    // the commit clamps the value; the field catches up with the stored value when it loses focus.
     var text by remember { mutableStateOf(formatNumber(value)) }
-    LaunchedEffect(value) {
-        if (parseDecimal(text) != value)
+    var focused by remember { mutableStateOf(false) }
+    LaunchedEffect(value, focused) {
+        if (!focused && parseDecimal(text) != value)
             text = formatNumber(value)
     }
     OutlinedTextField(
@@ -217,7 +220,7 @@ private fun NumberField(label: String, value: Double, modifier: Modifier = Modif
         label = { Text(label) },
         singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-        modifier = modifier,
+        modifier = modifier.onFocusChanged { focused = it.isFocused },
     )
 }
 

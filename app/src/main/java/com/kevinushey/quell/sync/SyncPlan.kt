@@ -17,6 +17,7 @@ data class SyncState(
     /** Fingerprints of an undecodable index.json / sweeps.json seen on the previous pass; seen twice, it is set aside. */
     val badIndexHash: String? = null,
     val badSweepsHash: String? = null,
+    val badTombstonesHash: String? = null,
 )
 
 /** A file in the mirror folder: its size when the provider reports one, else -1. */
@@ -106,7 +107,7 @@ class SyncPlan(
             }
             // A run deleted on another phone (a folder tombstone) is kept here but never uploaded again.
             val bins = localIds.filter { it !in deletedIds && !complete("$it.bin", localBinSizes[it]) }
-            val csvs = if (csv) localIds.filter { id -> state.csvNames[id]?.let { it !in remote } ?: true } else emptyList()
+            val csvs = if (csv) localIds.filter { id -> id !in deletedIds && (state.csvNames[id]?.let { it !in remote } ?: true) } else emptyList()
             val deletions = LinkedHashMap<String, List<String>>()
             for (id in deletedIds) {
                 if (id in local)

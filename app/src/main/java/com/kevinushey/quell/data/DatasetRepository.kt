@@ -488,7 +488,11 @@ class DatasetRepository(private val context: Context) {
             }
         }
 
-        /** Checks the header and that the file holds exactly the samples it announces. */
+        /**
+         * Checks the header, that the file holds exactly the samples it
+         * announces, and that this device can hold them: a run recorded on a
+         * larger phone must be refused here, not at the first analysis.
+         */
         fun validateSeriesFile(file: File) {
             java.io.RandomAccessFile(file, "r").use { raf ->
                 if (raf.length() < HEADER_BYTES || raf.readInt() != MAGIC)
@@ -496,6 +500,29 @@ class DatasetRepository(private val context: Context) {
                 val n = raf.readInt()
                 if (n < 0 || raf.length() != HEADER_BYTES + n.toLong() * 4 * 8)
                     throw IllegalStateException("${file.name} is truncated")
+                if (n > MemoryBudget.maxSamples())
+                    throw IllegalStateException("${file.name} holds $n samples, more than this device can analyze (${MemoryBudget.maxSamples()})")
+            }
+        }
+
+        /** Walks a .bin row by row without loading it: four column streams advanced in step. */
+        fun streamSeries(file: File, row: (Double, Double, Double, Double) -> Unit) {
+            val n = DataInputStream(file.inputStream()).use { input ->
+                if (input.readInt() != MAGIC)
+                    throw IllegalStateException("Bad dataset file")
+                input.readInt()
+            }
+            val columns = Array(4) { k ->
+                val stream = file.inputStream()
+                stream.channel.position(HEADER_BYTES + k.toLong() * n * 8)
+                DataInputStream(stream.buffered(1 shl 16))
+            }
+            try {
+                for (i in 0 until n)
+                    row(columns[0].readDouble(), columns[1].readDouble(), columns[2].readDouble(), columns[3].readDouble())
+            } finally {
+                for (c in columns)
+                    c.close()
             }
         }
 
@@ -505,6 +532,9 @@ class DatasetRepository(private val context: Context) {
                 if (magic != MAGIC)
                     throw IllegalStateException("Bad dataset file")
                 val n = input.readInt()
+                // A header promising more than the budget is a damaged or foreign file; say so instead of dying in the allocation.
+                if (n < 0 || n > MemoryBudget.maxSamples())
+                    throw IllegalStateException("Dataset file holds $n samples, more than this device can analyze")
                 val arrays = Array(4) { DoubleArray(n) }
                 for (arr in arrays)
                     for (i in 0 until n)

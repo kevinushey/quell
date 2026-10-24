@@ -13,6 +13,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -66,6 +67,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
     private val stateFile = File(context.filesDir, "sync-state.json")
     private val mutex = Mutex()
     private var scope: CoroutineScope? = null
+    private var retryScheduled = false
 
     private val _status = MutableStateFlow(SyncStatus())
     val status: StateFlow<SyncStatus> = _status
@@ -149,11 +151,32 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                 )
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: RetryLater) {
+                _status.value = _status.value.copy(lastError = e.message)
+                scheduleRetry(tree, csv)
             } catch (e: Exception) {
                 _status.value = _status.value.copy(lastError = e.message ?: e.javaClass.simpleName)
             } finally {
                 _status.value = _status.value.copy(syncing = false)
             }
+        }
+    }
+
+    /** A transient folder failure (listing still loading, content not yet downloaded) gets one more pass soon. */
+    private class RetryLater(message: String) : IllegalStateException(message)
+
+    private fun scheduleRetry(tree: Uri, csv: Boolean) {
+        val s = scope ?: return
+        if (retryScheduled)
+            return
+        retryScheduled = true
+        s.launch {
+            try {
+                delay(RETRY_DELAY_MS)
+            } finally {
+                retryScheduled = false
+            }
+            syncNow(tree, csv)
         }
     }
 
@@ -177,7 +200,11 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         val remoteIndex: List<DatasetMeta> = index.items ?: damagedOrAside(remote, "index.json", state.badIndexHash, index.badHash!!)
         val remoteSweeps: List<Sweep> = sweepsRead.items ?: damagedOrAside(remote, "sweeps.json", state.badSweepsHash, sweepsRead.badHash!!)
         // Tombstones live in the folder too, so a deletion made on one phone is not undone by another.
-        val remoteTombstones = readRemoteTombstones(remote)
+        val tombstonesRead = readRemoteTombstones(remote)
+        val seenAll = seen.copy(badTombstonesHash = tombstonesRead.badHash)
+        if (seenAll != seen)
+            saveState(seenAll)
+        val remoteTombstones: Set<String> = (tombstonesRead.items ?: damagedOrAside(remote, "deleted.json", state.badTombstonesHash, tombstonesRead.badHash!!)).toSet()
         val deleted = remoteTombstones + repo.deletedIds.value
         val mergedIndex = SyncPlan.mergeIndex(metas, remoteIndex, deleted)
         val mergedSweeps = SyncPlan.mergeSweeps(repo.sweeps.value, remoteSweeps, deleted)
@@ -218,13 +245,13 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         if (csv) {
             for (id in plan.csvToWrite) {
                 val meta = metas.firstOrNull { it.id == id } ?: continue
-                val series = repo.datasetFile(id).takeIf { it.exists() }?.let { DatasetRepository.readSeries(it) } ?: continue
+                val file = repo.datasetFile(id).takeIf { it.exists() } ?: continue
                 val name = csvName(meta)
+                // Streamed row by row from the .bin: a long run must not be loaded into the heap for this.
                 writeDocument(tree, remote, name, "text/csv") { out ->
                     out.bufferedWriter().use { w ->
                         w.write("\"Time (s)\",\"Acceleration x (m/s^2)\",\"Acceleration y (m/s^2)\",\"Acceleration z (m/s^2)\"\n")
-                        for (i in 0 until series.size)
-                            w.write("${series.time[i]},${series.x[i]},${series.y[i]},${series.z[i]}\n")
+                        DatasetRepository.streamSeries(file) { t, x, y, z -> w.write("$t,$x,$y,$z\n") }
                     }
                 }
                 csvNames[id] = name
@@ -252,12 +279,14 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         if (deleted != remoteTombstones || ("deleted.json" !in remote && deleted.isNotEmpty()))
             writeDocument(tree, remote, "deleted.json", "application/json") { it.write(tombstoneBytes) }
 
-        // Every local dataset with a complete remote .bin counts as mirrored, whoever wrote it.
+        // Every local dataset with a complete remote .bin counts as mirrored, whoever wrote it; a run deleted
+        // on another phone is not mirrored by definition.
         for (meta in metas) {
             val r = remote["${meta.id}.bin"]
             if (meta.id in plan.binsToWrite || (r != null && (r.size < 0 || r.size == localSizes[meta.id])))
                 mirrored.add(meta.id)
         }
+        mirrored.removeAll(remoteTombstones)
         saveState(
             SyncState(
                 mirrored,
@@ -266,6 +295,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                 if (indexWriteSafe) sweepsHash else state.sweepsHash,
                 badIndexHash = null,
                 badSweepsHash = null,
+                badTombstonesHash = null,
             )
         )
         if (settled.isNotEmpty())
@@ -275,14 +305,13 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         return MirrorOutcome(metas.count { it.id in mirrored }, plan.notOnThisPhone.size, metas.count { it.id in remoteTombstones && it.id !in repo.deletedIds.value })
     }
 
-    /** Ids deleted on any phone sharing the folder. A damaged list is treated as empty and rewritten. */
-    private fun readRemoteTombstones(remote: Map<String, Child>): Set<String> {
-        val uri = remote["deleted.json"]?.uri ?: return emptySet()
+    /** Ids deleted on any phone sharing the folder; read like the index, so a damaged list never reads as empty. */
+    private fun readRemoteTombstones(remote: Map<String, Child>): RemoteList<String> {
+        val uri = remote["deleted.json"]?.uri ?: return RemoteList(emptyList(), null)
         val bytes = readBytes(uri, "deleted.json")
-        return runCatching { DatasetRepository.indexJson.decodeFromString<List<String>>(String(bytes, Charsets.UTF_8)) }
-            .getOrDefault(emptyList())
-            .filter { ID_SHAPE.matches(it) }
-            .toSet()
+        return runCatching {
+            DatasetRepository.indexJson.decodeFromString<List<String>>(String(bytes, Charsets.UTF_8)).filter { ID_SHAPE.matches(it) }
+        }.fold({ RemoteList(it, null) }, { RemoteList(null, sha1(bytes)) })
     }
 
     /** A damaged folder file: set aside on its second sighting (then treated as absent), otherwise the pass stops here. */
@@ -338,14 +367,15 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         val stream = try {
             context.contentResolver.openInputStream(uri)
         } catch (e: Exception) {
-            throw IllegalStateException("The folder's $name could not be read right now; it will be retried.", e)
-        } ?: throw IllegalStateException("The folder's $name could not be read right now; it will be retried.")
+            throw RetryLater("The folder's $name could not be read right now; another pass runs shortly.")
+        } ?: throw RetryLater("The folder's $name could not be read right now; another pass runs shortly.")
         return stream.use { it.readBytes() }
     }
 
     private companion object {
         /** The UUIDs this app generates; anything else in a folder's index is not ours to place in the sandbox. */
         val ID_SHAPE = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+        const val RETRY_DELAY_MS = 15_000L
     }
 
     /**
@@ -375,7 +405,9 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             val sweepsRead = readRemoteSweeps(remote)
             val sweeps = sweepsRead.items ?: emptyList()
             val have = repo.datasets.value.map { it.id }.toSet()
-            val deleted = repo.deletedIds.value + readRemoteTombstones(remote)
+            val tombstones = readRemoteTombstones(remote).items
+                ?: throw IllegalStateException("The folder's deleted.json is damaged (not valid JSON); restore would not know what was deleted. With mirroring on it is set aside after two passes, or fix it by hand.")
+            val deleted = repo.deletedIds.value + tombstones
             val incoming = ArrayList<DatasetMeta>()
             val skipped = ArrayList<String>()
             if (sweepsRead.items == null)
@@ -384,16 +416,21 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                 for (meta in metas) {
                     if (meta.id in have || meta.id in deleted)
                         continue
-                    val binUri = remote["${meta.id}.bin"]?.uri ?: continue
+                    val remoteBin = remote["${meta.id}.bin"] ?: continue
                     val target = repo.datasetFile(meta.id)
                     val tmp = File(target.path + ".restore")
                     try {
-                        context.contentResolver.openInputStream(binUri)?.use { input -> tmp.outputStream().use { input.copyTo(it) } }
-                            ?: throw IllegalStateException("could not be read")
-                        // Refuse a truncated or foreign file before it becomes a dataset.
-                        DatasetRepository.validateSeriesFile(tmp)
-                        if (!tmp.renameTo(target))
-                            throw IllegalStateException("could not be placed")
+                        // A lost index leaves the files behind; one that is intact (and the size the folder reports) needs no download.
+                        val onDisk = target.exists() && runCatching { DatasetRepository.validateSeriesFile(target) }.isSuccess &&
+                            (remoteBin.size < 0 || remoteBin.size == target.length())
+                        if (!onDisk) {
+                            context.contentResolver.openInputStream(remoteBin.uri)?.use { input -> tmp.outputStream().use { input.copyTo(it) } }
+                                ?: throw IllegalStateException("could not be read")
+                            // Refuse a truncated, foreign or oversized file before it becomes a dataset.
+                            DatasetRepository.validateSeriesFile(tmp)
+                            if (!tmp.renameTo(target))
+                                throw IllegalStateException("could not be placed")
+                        }
                         incoming.add(meta)
                     } catch (e: CancellationException) {
                         throw e
@@ -450,7 +487,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             // A cloud provider may answer with part of the folder while it fetches the rest; planning on that
             // would create duplicates and forget deletions. Wait for the next pass instead.
             if (c.extras?.getBoolean(DocumentsContract.EXTRA_LOADING, false) == true)
-                throw IllegalStateException("The folder listing is still loading; it will be retried.")
+                throw RetryLater("The folder listing is still loading; another pass runs shortly.")
             val modified = HashMap<String, Long>()
             while (c.moveToNext()) {
                 val name = c.getString(1)

@@ -169,6 +169,14 @@ class SyncPlanTest {
     }
 
     @Test
+    fun tombstonedRunsGetNoCsvCopyEither() {
+        val r = remote("a.bin", "index.json", "sweeps.json", "deleted.json")
+        val state = SyncState(mirrored = setOf("a"), indexHash = "i1", sweepsHash = "s1")
+        val p = plan(listOf("a", "b"), r, state, indexIds = listOf("a"), deleted = setOf("b"), csv = true)
+        assertEquals(listOf("a"), p.csvToWrite)
+    }
+
+    @Test
     fun csvCopiesFollowTheToggle() {
         val r = remote("a.bin", "a-run.csv", "index.json", "sweeps.json")
         val state = SyncState(mirrored = setOf("a"), csvNames = mapOf("a" to "a-run.csv"), indexHash = "i1", sweepsHash = "s1")

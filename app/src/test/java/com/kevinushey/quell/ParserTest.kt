@@ -263,6 +263,39 @@ class ParserTest {
     }
 
     @Test
+    fun streamingMatchesTheLoadedSeriesAndOversizedHeadersAreRefused() {
+        val n = 300
+        val series = com.kevinushey.quell.data.TimeSeries(
+            DoubleArray(n) { it / 100.0 },
+            DoubleArray(n) { it.toDouble() },
+            DoubleArray(n) { -it.toDouble() },
+            DoubleArray(n) { 9.81 },
+        )
+        val file = java.io.File.createTempFile("quell", ".bin")
+        try {
+            DatasetRepository.writeSeries(file, series)
+            val rows = ArrayList<DoubleArray>()
+            DatasetRepository.streamSeries(file) { t, x, y, z -> rows.add(doubleArrayOf(t, x, y, z)) }
+            assertEquals(n, rows.size)
+            assertEquals(1.23, rows[123][0], 1e-12)
+            assertEquals(-123.0, rows[123][2], 0.0)
+            // A header announcing more samples than the device budget is refused before any allocation.
+            java.io.RandomAccessFile(file, "rw").use { raf ->
+                raf.seek(4)
+                raf.writeInt(Int.MAX_VALUE)
+            }
+            try {
+                DatasetRepository.readSeries(file)
+                org.junit.Assert.fail("expected a refusal")
+            } catch (e: IllegalStateException) {
+                assertTrue(e.message!!, e.message!!.contains("more than this device"))
+            }
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
     fun rangeInsideAGapKeepsTheBracketingSamples() {
         // Samples at 1 s and 9 s; a viewport of 4..6 s lies between them and must still draw the line.
         val series = com.kevinushey.quell.data.TimeSeries(
