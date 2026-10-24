@@ -91,6 +91,9 @@ object Welch {
         var windowPower = 0.0
         for (i in 0 until count)
             windowPower += wUsed[i] * wUsed[i]
+        // A two-point Hann window is all zeros; report no power rather than 0 * infinity.
+        if (windowPower <= 0.0)
+            return Spectrum(freq, acc)
 
         val re = DoubleArray(n)
         val im = DoubleArray(n)

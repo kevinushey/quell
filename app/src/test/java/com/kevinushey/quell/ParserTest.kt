@@ -216,11 +216,39 @@ class ParserTest {
             val fromDisk = DatasetRepository.readSeriesRange(file, 2.0, 3.0)
             val inMemory = series.sliceTime(2.0, 3.0)
             assertEquals(inMemory.size, fromDisk.size)
-            assertEquals(100, fromDisk.size)
-            assertEquals(200.0, fromDisk.x[0], 0.0)
-            assertEquals(-299.0, fromDisk.y[99], 0.0)
-            assertEquals(2.0, fromDisk.time[0], 1e-12)
-            assertEquals(0, DatasetRepository.readSeriesRange(file, 50.0, 60.0).size)
+            // The 100 samples inside the window plus one bracketing sample on each side.
+            assertEquals(102, fromDisk.size)
+            assertEquals(199.0, fromDisk.x[0], 0.0)
+            assertEquals(-300.0, fromDisk.y[101], 0.0)
+            assertEquals(1.99, fromDisk.time[0], 1e-12)
+            // Past the end of the data only the last sample brackets the window.
+            assertEquals(1, DatasetRepository.readSeriesRange(file, 50.0, 60.0).size)
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun rangeInsideAGapKeepsTheBracketingSamples() {
+        // Samples at 1 s and 9 s; a viewport of 4..6 s lies between them and must still draw the line.
+        val series = com.kevinushey.quell.data.TimeSeries(
+            doubleArrayOf(0.0, 1.0, 9.0, 10.0),
+            doubleArrayOf(0.0, 1.0, 9.0, 10.0),
+            DoubleArray(4),
+            DoubleArray(4),
+        )
+        val inMemory = series.sliceTime(4.0, 6.0)
+        assertEquals(2, inMemory.size)
+        assertEquals(1.0, inMemory.time[0], 0.0)
+        assertEquals(9.0, inMemory.time[1], 0.0)
+
+        val file = java.io.File.createTempFile("quell", ".bin")
+        try {
+            DatasetRepository.writeSeries(file, series)
+            val fromDisk = DatasetRepository.readSeriesRange(file, 4.0, 6.0)
+            assertEquals(2, fromDisk.size)
+            assertEquals(1.0, fromDisk.x[0], 0.0)
+            assertEquals(9.0, fromDisk.x[1], 0.0)
         } finally {
             file.delete()
         }

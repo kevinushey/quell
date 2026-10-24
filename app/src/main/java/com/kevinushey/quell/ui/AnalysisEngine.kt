@@ -25,11 +25,23 @@ class Resampled(val sampleRate: Double, val x: DoubleArray, val y: DoubleArray, 
     }
 
     companion object {
+        /** Fewest resampled samples worth analyzing; matches the recorder's minimum capture. */
+        const val MIN_SAMPLES = 16
+
         fun from(s: TimeSeries): Resampled {
             val fs = Resampler.estimateSampleRate(s.time)
             // A trim window can span a gap the import never had to resample; refuse before allocating.
             val length = Resampler.resampledLength(s.time, fs)
             val limit = MemoryBudget.maxSamples()
+            // A window of a couple of samples around a gap has nothing to window or average.
+            if (length < MIN_SAMPLES)
+                throw IllegalArgumentException(
+                    "The analysis window holds only %d samples; at least %d are needed. Widen the window.".format(
+                        java.util.Locale.US,
+                        length,
+                        MIN_SAMPLES,
+                    )
+                )
             if (s.size >= 2 && length > limit)
                 throw IllegalArgumentException(
                     "The analysis window spans %.0f s at %.0f Hz (%d samples), more than this device can analyze (%d). Trim the window to exclude the gap.".format(

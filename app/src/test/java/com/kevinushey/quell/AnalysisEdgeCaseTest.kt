@@ -92,6 +92,31 @@ class AnalysisEdgeCaseTest {
     }
 
     @Test
+    fun twoSampleSignalHasNoNaNPower() {
+        // A two-point Hann window is all zeros; the PSD must stay finite.
+        val psd = Welch.psd(doubleArrayOf(1.0, 2.0), 400.0, 1024)
+        for (p in psd.power)
+            assertTrue("non-finite power $p", p.isFinite())
+    }
+
+    @Test
+    fun resampledRefusesWindowsTooShortToAnalyze() {
+        // A trim window catching two samples around a gap.
+        val series = com.kevinushey.quell.data.TimeSeries(
+            doubleArrayOf(1.0, 1.0025),
+            doubleArrayOf(1.0, 2.0),
+            DoubleArray(2),
+            DoubleArray(2),
+        )
+        try {
+            com.kevinushey.quell.ui.Resampled.from(series)
+            fail("expected IllegalArgumentException")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message!!.contains("Widen"))
+        }
+    }
+
+    @Test
     fun croppedSpectrumEdgesAreOrdinaryBins() {
         val full = Spectrum(DoubleArray(201) { it.toDouble() }, DoubleArray(201) { 1.0 })
         assertEquals(sqrt(201.0), full.bandRms(0.0, 200.0), 1e-9)

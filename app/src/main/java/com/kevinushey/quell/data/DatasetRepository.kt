@@ -319,8 +319,9 @@ class DatasetRepository(private val context: Context) {
                     }
                     return lo
                 }
-                val a = lowerBound(from)
-                val b = lowerBound(to).coerceAtMost(n)
+                // Bracketing samples match TimeSeries.sliceTime; see the note there.
+                val a = (lowerBound(from) - 1).coerceAtLeast(0)
+                val b = (lowerBound(to) + 1).coerceAtMost(n)
                 val count = (b - a).coerceAtLeast(0)
                 val arrays = Array(4) { DoubleArray(count) }
                 val bytes = java.nio.ByteBuffer.allocate(count * 8)

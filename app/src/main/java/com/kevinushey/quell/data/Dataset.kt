@@ -34,7 +34,7 @@ class TimeSeries(
 
     fun magnitude(): DoubleArray = DoubleArray(size) { Math.sqrt(x[it] * x[it] + y[it] * y[it] + z[it] * z[it]) }
 
-    /** Samples with absolute time in [from, to]. */
+    /** Samples with absolute time in [from, to), plus one bracketing sample on each side. */
     fun sliceTime(from: Double, to: Double): TimeSeries {
         var lo = 0
         var hi = size
@@ -54,7 +54,11 @@ class TimeSeries(
             else
                 hi2 = mid
         }
-        return TimeSeries(time.copyOfRange(lo, end), x.copyOfRange(lo, end), y.copyOfRange(lo, end), z.copyOfRange(lo, end))
+        // Keep one sample on each side so a line through the window stays
+        // continuous when the window falls inside a timestamp gap.
+        val start = if (lo > 0) lo - 1 else 0
+        val stop = if (end < size) end + 1 else size
+        return TimeSeries(time.copyOfRange(start, stop), x.copyOfRange(start, stop), y.copyOfRange(start, stop), z.copyOfRange(start, stop))
     }
 }
 
