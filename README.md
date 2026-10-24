@@ -15,6 +15,10 @@ It was built around [phyphox](https://phyphox.org) "Acceleration" exports but
 reads any CSV with a time column and x/y/z (or magnitude) columns, and can also
 record directly from the phone's own accelerometer.
 
+New here? [Using Quell](docs/guide.md) walks through a session: recording or
+importing, reading a spectrum and its uncertainty, tap tests and the antinode
+search, tuning a damper with the Damper tab and sweeps, and keeping the data.
+
 ## Features
 
 - Import one or many `.zip` / `.csv` files via the system picker, or share
