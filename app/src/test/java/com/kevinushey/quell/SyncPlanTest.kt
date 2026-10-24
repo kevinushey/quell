@@ -159,6 +159,18 @@ class SyncPlanTest {
     }
 
     @Test
+    fun aTransientFailureGetsEveryRetryThenHandsOverToSyncNow() = kotlinx.coroutines.runBlocking {
+        // Every pass still failing: all three run, then the caller is told to stop.
+        var attempts = 0
+        assertTrue(SyncPlan.retryPasses(3, 0) { attempts++; true })
+        assertEquals(3, attempts)
+        // The second pass gets through: no third, and nothing to hand over.
+        attempts = 0
+        assertFalse(SyncPlan.retryPasses(3, 0) { attempts++; attempts < 2 })
+        assertEquals(2, attempts)
+    }
+
+    @Test
     fun aRunDeletedOnAnotherPhoneIsNotUploadedAgain() {
         // b is local here but tombstoned in the folder: it is neither uploaded nor carried, and nothing is deleted here.
         val r = remote("a.bin", "index.json", "sweeps.json", "deleted.json")

@@ -13,7 +13,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -71,14 +70,20 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
     private val mutex = Mutex()
     private var scope: CoroutineScope? = null
     private var retry: Job? = null
-    private var retryAttempts = 0
 
     private val _status = MutableStateFlow(SyncStatus())
     val status: StateFlow<SyncStatus> = _status
 
-    /** One-line outcomes of user-requested work (restore), for the snackbar. */
-    private val _events = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    /**
+     * One-line outcomes of user-requested work (restore), for the snackbar.
+     * Replayed, because a restore outlives the screen that asked for it; the
+     * consumer calls [eventsShown] once it has passed them on.
+     */
+    private val _events = MutableSharedFlow<String>(replay = 4, extraBufferCapacity = 4)
     val events: SharedFlow<String> = _events
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun eventsShown() = _events.resetReplayCache()
 
     /** Watches the store and the settings; a change schedules a pass a few seconds later. */
     @OptIn(FlowPreview::class)
@@ -94,9 +99,9 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                 .collect { (treeUri, enabled, csv) ->
                     // A pending retry belongs to the settings it was scheduled under.
                     retry?.cancel()
-                    retryAttempts = 0
                     val tree = treeUri?.takeIf { enabled } ?: run {
-                        _status.value = SyncStatus()
+                        // A restore may still be running: "Restore from folder" does not need mirroring on.
+                        _status.update { SyncStatus(restoring = it.restoring) }
                         return@collect
                     }
                     // Nothing may end this loop, or the process: a bad grant is a status line, not a crash.
@@ -134,7 +139,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             } catch (e: CancellationException) {
                 throw e
             } catch (e: RetryLater) {
-                "Could not restore from the folder yet: ${e.message?.substringBefore(';') ?: "it is not ready"}. Try again in a few seconds."
+                "Could not restore from the folder yet: ${e.reason}. Try again in a few seconds."
             } catch (e: Exception) {
                 "Could not restore from the folder: ${e.message ?: e.javaClass.simpleName}"
             }
@@ -142,15 +147,20 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         }
     }
 
-    /** One mirror pass. */
-    suspend fun syncNow(tree: Uri, csv: Boolean) = withContext(Dispatchers.IO) {
+    /** One mirror pass; a transient folder failure gets a few more passes shortly after. */
+    suspend fun syncNow(tree: Uri, csv: Boolean) {
+        if (pass(tree, csv) != null)
+            scheduleRetry(tree)
+    }
+
+    /** The mirror pass itself: why it should run again soon, or null when it should not. */
+    private suspend fun pass(tree: Uri, csv: Boolean): String? = withContext(Dispatchers.IO) {
         mutex.withLock {
             _status.update { it.copy(syncing = true) }
             try {
                 // The name lookup touches the grant too; a revoked folder must land in lastError like anything else.
                 _status.update { it.copy(folderName = folderName(tree)) }
                 val outcome = mirror(tree, csv)
-                retryAttempts = 0
                 _status.update {
                     it.copy(
                         lastSyncEpochMs = System.currentTimeMillis(),
@@ -161,13 +171,15 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                         deletedElsewhere = outcome.deletedElsewhere,
                     )
                 }
+                null
             } catch (e: CancellationException) {
                 throw e
             } catch (e: RetryLater) {
                 _status.update { it.copy(lastError = e.message) }
-                scheduleRetry(tree)
+                e.reason
             } catch (e: Exception) {
                 _status.update { it.copy(lastError = e.message ?: e.javaClass.simpleName) }
+                null
             } finally {
                 _status.update { it.copy(syncing = false) }
             }
@@ -175,28 +187,29 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
     }
 
     /** A transient folder failure (listing still loading, content not yet downloaded) gets another pass soon. */
-    private class RetryLater(message: String) : IllegalStateException(message)
+    private class RetryLater(val reason: String) : IllegalStateException("$reason; another pass runs shortly.")
 
     /**
-     * A few delayed passes, each checked against the settings as they are
-     * when it fires: a folder the user has since left or stopped mirroring
-     * is never written to by a stale retry.
+     * A few delayed passes from one job, each checked against the settings as
+     * they are when it fires: a folder the user has since left or stopped
+     * mirroring is never written to by a stale retry. The passes run here
+     * rather than through [syncNow], so a retry never waits on its own job.
      */
     private fun scheduleRetry(tree: Uri) {
         val s = scope ?: return
         if (retry?.isActive == true)
             return
-        if (retryAttempts >= MAX_RETRIES) {
-            _status.update { it.copy(lastError = (it.lastError ?: "The folder could not be read") + " Use Sync now to try again.") }
-            return
-        }
-        retryAttempts++
         retry = s.launch {
-            delay(RETRY_DELAY_MS)
-            val app = settings.app.first()
-            if (!app.syncEnabled || app.syncTreeUri != tree.toString())
-                return@launch
-            syncNow(tree, app.syncCsv)
+            var reason: String? = null
+            val exhausted = SyncPlan.retryPasses(MAX_RETRIES, RETRY_DELAY_MS) {
+                val app = settings.app.first()
+                if (!app.syncEnabled || app.syncTreeUri != tree.toString())
+                    return@retryPasses false
+                reason = pass(tree, app.syncCsv)
+                reason != null
+            }
+            if (exhausted)
+                _status.update { it.copy(lastError = "$reason. Use Sync now to try again.") }
         }
     }
 
@@ -390,8 +403,8 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         val stream = try {
             context.contentResolver.openInputStream(uri)
         } catch (e: Exception) {
-            throw RetryLater("The folder's $name could not be read right now; another pass runs shortly.")
-        } ?: throw RetryLater("The folder's $name could not be read right now; another pass runs shortly.")
+            throw RetryLater("The folder's $name could not be read right now")
+        } ?: throw RetryLater("The folder's $name could not be read right now")
         return stream.use { it.readBytes() }
     }
 
@@ -511,7 +524,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             // A cloud provider may answer with part of the folder while it fetches the rest; planning on that
             // would create duplicates and forget deletions. Wait for the next pass instead.
             if (c.extras?.getBoolean(DocumentsContract.EXTRA_LOADING, false) == true)
-                throw RetryLater("The folder listing is still loading; another pass runs shortly.")
+                throw RetryLater("The folder listing is still loading")
             val modified = HashMap<String, Long>()
             while (c.moveToNext()) {
                 val name = c.getString(1)

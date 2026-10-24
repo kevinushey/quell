@@ -110,7 +110,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 repo.problemsShown()
             }
         }
-        viewModelScope.launch { sync.events.collect { _messages.emit(it) } }
+        viewModelScope.launch {
+            // A restore that finished while no screen was open is replayed here, like the problems above.
+            _messages.subscriptionCount.first { it > 0 }
+            sync.events.collect {
+                _messages.emit(it)
+                sync.eventsShown()
+            }
+        }
     }
 
     /**

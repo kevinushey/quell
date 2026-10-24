@@ -494,30 +494,35 @@ class DatasetRepository(private val context: Context) {
          * larger phone must be refused here, not at the first analysis.
          */
         fun validateSeriesFile(file: File) {
+            val n = checkedSampleCount(file)
+            if (n > MemoryBudget.maxSamples())
+                throw IllegalStateException("${file.name} holds $n samples, more than this device can analyze (${MemoryBudget.maxSamples()})")
+        }
+
+        /** The header's sample count, once the magic and the exact file length agree with it. */
+        private fun checkedSampleCount(file: File): Int {
             java.io.RandomAccessFile(file, "r").use { raf ->
                 if (raf.length() < HEADER_BYTES || raf.readInt() != MAGIC)
                     throw IllegalStateException("${file.name} is not a dataset file")
                 val n = raf.readInt()
                 if (n < 0 || raf.length() != HEADER_BYTES + n.toLong() * 4 * 8)
                     throw IllegalStateException("${file.name} is truncated")
-                if (n > MemoryBudget.maxSamples())
-                    throw IllegalStateException("${file.name} holds $n samples, more than this device can analyze (${MemoryBudget.maxSamples()})")
+                return n
             }
         }
 
         /** Walks a .bin row by row without loading it: four column streams advanced in step. */
         fun streamSeries(file: File, row: (Double, Double, Double, Double) -> Unit) {
-            val n = DataInputStream(file.inputStream()).use { input ->
-                if (input.readInt() != MAGIC)
-                    throw IllegalStateException("Bad dataset file")
-                input.readInt()
-            }
-            val columns = Array(4) { k ->
-                val stream = file.inputStream()
-                stream.channel.position(HEADER_BYTES + k.toLong() * n * 8)
-                DataInputStream(stream.buffered(1 shl 16))
-            }
+            // Streaming needs no heap budget, only a header that matches the file, so a damaged one fails before any open.
+            val n = checkedSampleCount(file)
+            val columns = ArrayList<DataInputStream>(4)
             try {
+                for (k in 0 until 4) {
+                    val stream = file.inputStream()
+                    // Tracked before positioning, so a failed seek still closes it.
+                    columns.add(DataInputStream(stream.buffered(1 shl 16)))
+                    stream.channel.position(HEADER_BYTES + k.toLong() * n * 8)
+                }
                 for (i in 0 until n)
                     row(columns[0].readDouble(), columns[1].readDouble(), columns[2].readDouble(), columns[3].readDouble())
             } finally {

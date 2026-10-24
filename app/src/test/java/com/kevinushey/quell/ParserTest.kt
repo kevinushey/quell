@@ -290,6 +290,19 @@ class ParserTest {
             } catch (e: IllegalStateException) {
                 assertTrue(e.message!!, e.message!!.contains("more than this device"))
             }
+            // Streaming refuses a header that disagrees with the file before opening any column stream.
+            for (bad in intArrayOf(Int.MAX_VALUE, -1)) {
+                java.io.RandomAccessFile(file, "rw").use { raf ->
+                    raf.seek(4)
+                    raf.writeInt(bad)
+                }
+                try {
+                    DatasetRepository.streamSeries(file) { _, _, _, _ -> }
+                    org.junit.Assert.fail("expected a refusal for n = $bad")
+                } catch (e: IllegalStateException) {
+                    assertTrue(e.message!!, e.message!!.contains("truncated"))
+                }
+            }
         } finally {
             file.delete()
         }

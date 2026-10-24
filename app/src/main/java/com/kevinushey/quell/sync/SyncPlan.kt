@@ -2,6 +2,7 @@ package com.kevinushey.quell.sync
 
 import com.kevinushey.quell.data.DatasetMeta
 import com.kevinushey.quell.data.Sweep
+import kotlinx.coroutines.delay
 import kotlinx.serialization.Serializable
 
 /** What the mirror folder already holds, as written by this app. */
@@ -49,6 +50,20 @@ class SyncPlan(
          */
         fun damagedFileAction(previousBadHash: String?, currentBadHash: String): DamagedFile =
             if (previousBadHash == currentBadHash) DamagedFile.SET_ASIDE else DamagedFile.ABORT_AND_REMEMBER
+
+        /**
+         * Up to [maxAttempts] delayed passes after a transient folder failure,
+         * stopping at the first that does not ask for another. True when every
+         * attempt still asked for one: the caller hands over to Sync now.
+         */
+        suspend fun retryPasses(maxAttempts: Int, delayMs: Long, pass: suspend () -> Boolean): Boolean {
+            repeat(maxAttempts) {
+                delay(delayMs)
+                if (!pass())
+                    return false
+            }
+            return true
+        }
 
         /**
          * The folder's index is a union: this phone's entries, then every entry
