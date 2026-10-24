@@ -8,7 +8,19 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+import android.content.Intent
+import java.text.DateFormat
+import java.util.Date
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
@@ -27,8 +39,67 @@ import com.kevinushey.quell.ui.MainViewModel
 @Composable
 fun SettingsScreen(vm: MainViewModel) {
     val app by vm.appSettings.collectAsStateWithLifecycle()
+    val sync by vm.syncStatus.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    var confirmRestore by remember { mutableStateOf(false) }
+    val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri == null)
+            return@rememberLauncherForActivityResult
+        // The grant must outlive this activity, or the mirror stops at the next launch.
+        context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        vm.setSyncFolder(uri)
+    }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Text("Cloud sync", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Mirrors every recording, its settings and your sweeps into a folder you choose. Pick a Google Drive, Dropbox or OneDrive folder and that app uploads the files; pick a local folder for a plain copy. Nothing is sent anywhere else.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (app.syncTreeUri == null) {
+            Button(onClick = { pickFolder.launch(null) }) { Text("Choose folder") }
+        } else {
+            val when_ = sync.lastSyncEpochMs?.let { DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(it)) }
+            Text(
+                buildString {
+                    append("Folder: ${sync.folderName ?: "(chosen)"}")
+                    if (sync.syncing)
+                        append("  |  syncing...")
+                    else if (when_ != null)
+                        append("  |  ${sync.mirroredCount} mirrored, last sync $when_")
+                },
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            sync.lastError?.let {
+                Text("Last error: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+            if (sync.foreignCount > 0) {
+                Text(
+                    "The folder holds ${sync.foreignCount} dataset${if (sync.foreignCount == 1) "" else "s"} this phone does not have. Restore them first; until then the folder's index is left as it is.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                )
+            }
+            SwitchRow("Mirror automatically", "Copies new and changed data a few seconds after each change while the app is open", app.syncEnabled) { on ->
+                vm.updateAppSettings { it.copy(syncEnabled = on) }
+                if (on)
+                    vm.syncNow()
+            }
+            SwitchRow("Also write CSV copies", "One CSV per run next to the app's own files, for spreadsheets or other tools", app.syncCsv) { on ->
+                vm.updateAppSettings { it.copy(syncCsv = on) }
+                if (on)
+                    vm.syncNow()
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { vm.syncNow() }, enabled = app.syncEnabled && !sync.syncing) { Text("Sync now") }
+                OutlinedButton(onClick = { confirmRestore = true }) { Text("Restore from folder") }
+                TextButton(onClick = { pickFolder.launch(null) }) { Text("Change") }
+            }
+            TextButton(onClick = { vm.setSyncFolder(null) }) { Text("Stop mirroring") }
+        }
+
+        HorizontalDivider()
         Text("Appearance", style = MaterialTheme.typography.titleMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             for (mode in ThemeMode.entries) {
@@ -67,6 +138,24 @@ fun SettingsScreen(vm: MainViewModel) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+
+    if (confirmRestore) {
+        RestoreDialog(onDismiss = { confirmRestore = false }) {
+            confirmRestore = false
+            vm.restoreFromSync()
+        }
+    }
+}
+
+@Composable
+private fun RestoreDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Restore from folder?") },
+        text = { Text("Datasets and sweeps in the folder that this phone does not have are copied in. Nothing here is overwritten or removed.") },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("Restore") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable

@@ -58,6 +58,10 @@ record directly from the phone's own accelerometer.
   rotation frequency on the spectrum.
 - Peak labels, pinch zoom, pan, tap crosshair readout, double-tap reset.
 - Share any chart as PNG; export spectra or raw samples as CSV.
+- Cloud sync: pick any folder through the system picker (Google Drive,
+  Dropbox, OneDrive, local) and the app mirrors its recordings, settings
+  and sweeps into it a few seconds after each change, optionally with a CSV
+  per run; "Restore from folder" brings everything back on a new phone.
 - Settings persist across launches; light/dark/dynamic color themes.
 
 ## Building

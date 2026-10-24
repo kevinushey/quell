@@ -174,6 +174,31 @@ class DatasetRepository(private val context: Context) {
         }
     }
 
+    /** Where a dataset's samples live; the sync mirror copies these files as they are. */
+    fun datasetFile(id: String): File = File(dir, "$id.bin")
+
+    /**
+     * Registers datasets whose .bin files are already in place (restored from
+     * a mirror) and merges sweeps by id. Ids already present are skipped.
+     */
+    suspend fun adopt(metas: List<DatasetMeta>, sweeps: List<Sweep>) = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            loadLocked()
+            val have = _datasets.value.map { it.id }.toSet()
+            val incoming = metas.filter { it.id !in have && File(dir, "${it.id}.bin").exists() }
+            val haveSweeps = _sweeps.value.map { it.id }.toSet()
+            val newSweeps = sweeps.filter { it.id !in haveSweeps }
+            if (incoming.isEmpty() && newSweeps.isEmpty())
+                return@withLock
+            val nextDatasets = _datasets.value + incoming
+            val nextSweeps = _sweeps.value + newSweeps
+            persistIndex(nextDatasets)
+            _datasets.value = nextDatasets
+            persistSweeps(nextSweeps)
+            _sweeps.value = nextSweeps
+        }
+    }
+
     /** Drops cached samples so a large save or import has the heap to themselves; they reload on demand. */
     suspend fun releaseSamples() = mutex.withLock { cache.clear() }
 
@@ -404,6 +429,17 @@ class DatasetRepository(private val context: Context) {
                     bytes.asDoubleBuffer().get(arrays[k])
                 }
                 return TimeSeries(arrays[0], arrays[1], arrays[2], arrays[3])
+            }
+        }
+
+        /** Checks the header and that the file holds exactly the samples it announces. */
+        fun validateSeriesFile(file: File) {
+            java.io.RandomAccessFile(file, "r").use { raf ->
+                if (raf.length() < HEADER_BYTES || raf.readInt() != MAGIC)
+                    throw IllegalStateException("${file.name} is not a dataset file")
+                val n = raf.readInt()
+                if (n < 0 || raf.length() != HEADER_BYTES + n.toLong() * 4 * 8)
+                    throw IllegalStateException("${file.name} is truncated")
             }
         }
 

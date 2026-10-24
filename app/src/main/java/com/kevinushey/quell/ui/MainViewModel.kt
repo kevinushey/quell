@@ -46,6 +46,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repo = (app as QuellApp).repository
     private val settingsStore = (app as QuellApp).settings
+    private val sync = (app as QuellApp).sync
+
+    val syncStatus: StateFlow<com.kevinushey.quell.sync.SyncStatus> = sync.status
 
     val datasets: StateFlow<List<DatasetMeta>> = repo.datasets
     val sweeps: StateFlow<List<Sweep>> = repo.sweeps
@@ -312,6 +315,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun message(text: String) {
         _messages.tryEmit(text)
+    }
+
+    /** A new mirror folder (persisted permission already taken by the caller), or null to stop mirroring. */
+    fun setSyncFolder(tree: Uri?) {
+        updateAppSettings { it.copy(syncTreeUri = tree?.toString(), syncEnabled = tree != null) }
+        if (tree != null)
+            syncNow()
+    }
+
+    fun syncNow() {
+        val app = _appSettings.value
+        val tree = app.syncTreeUri?.takeIf { app.syncEnabled } ?: return
+        viewModelScope.launch { sync.syncNow(Uri.parse(tree), app.syncCsv) }
+    }
+
+    /** Pulls datasets and sweeps this phone lacks from the mirror folder. */
+    fun restoreFromSync() {
+        val tree = _appSettings.value.syncTreeUri ?: return
+        launchReporting("restore from the folder") {
+            _busy.value++
+            try {
+                val n = sync.restore(Uri.parse(tree))
+                _messages.tryEmit(if (n == 0) "Nothing new in the folder" else "Restored $n dataset${if (n == 1) "" else "s"}")
+            } finally {
+                _busy.value--
+            }
+        }
     }
 
     suspend fun series(id: String): TimeSeries? = repo.series(id)
