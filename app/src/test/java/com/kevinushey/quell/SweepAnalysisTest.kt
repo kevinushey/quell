@@ -82,6 +82,17 @@ class SweepAnalysisTest {
     }
 
     @Test
+    fun tapSweepsWithinTheirErrorBarsShowDampingToFourDecimals() {
+        // Damping ratios of 0.020-0.023 at +/- 0.003: in the dB format both would read 0.0.
+        val tap = sweep.copy(kind = ExperimentKind.TAP)
+        val pts = listOf(point(10.0, 0.020, error = 0.003), point(30.0, 0.023, error = 0.003), point(50.0, 0.021, error = 0.003))
+        val summary = SweepAnalysis.summarize(tap, pts)
+        assertNull(summary.optimum)
+        assertTrue(summary.note, summary.note.contains("differ by 0.0030 between best and worst"))
+        assertTrue(summary.note, summary.note.contains("uncertainty (0.0030)"))
+    }
+
+    @Test
     fun silentRunsAreReportedNotFitted() {
         // A flat zero PSD against a real baseline: the ratio is -infinity, which must not reach the fit or the table.
         val fs = 400.0

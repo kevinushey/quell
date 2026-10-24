@@ -226,10 +226,12 @@ object SweepAnalysis {
         val spread = pooled.maxOf { it.metric } - pooled.minOf { it.metric }
         // Nothing to optimize yet when every value agrees within its error bars.
         if (sigma > 0 && spread < 2 * sigma) {
+            // Damping ratios live around 0.01, so they need the run table's four decimals, not the dB format.
+            val amount = if (minimize) "%.1f dB" else "%.4f"
             val note = buildString {
                 append(
-                    "The values differ by %.1f%s between best and worst, less than twice their uncertainty (%.1f%s). Spread the values further apart or repeat runs before reading an optimum.".format(
-                        Locale.US, spread, if (minimize) " dB" else "", sigma, if (minimize) " dB" else "",
+                    "The values differ by $amount between best and worst, less than twice their uncertainty ($amount). Spread the values further apart or repeat runs before reading an optimum.".format(
+                        Locale.US, spread, sigma,
                     )
                 )
                 if (minimize)
