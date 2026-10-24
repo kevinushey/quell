@@ -50,8 +50,10 @@ record directly from the phone's own accelerometer.
   location" between spots) and ranks the spots by how hard each tap sets the
   mode ringing per unit impact, so the antinode of a panel mode can be found
   with the phone fixed in one place.
-- Per-dataset analysis window (trim), experiment type (general, drive or tap) and
-  damper mass.
+- Per-dataset analysis window (trim) with a one-tap "Keep the steady part"
+  that finds the longest stretch of steady vibration (door slams, idling and
+  the parking shuffle fall outside it), experiment type (general, drive or
+  tap) and damper mass.
 - Reference-band normalization to correct for differing road input between
   runs; the footer reports averages and the resulting dB uncertainty.
 - Wheel-order markers: enter speed and tire size to mark 1x/2x/3x wheel

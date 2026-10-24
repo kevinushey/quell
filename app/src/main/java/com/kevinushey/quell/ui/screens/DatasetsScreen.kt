@@ -442,14 +442,40 @@ private fun TrimDialog(vm: MainViewModel, meta: DatasetMeta, onDismiss: () -> Un
             peaks
         }
     }
+    // null while computing; a failure (empty result) is a Result too, so the button never says "..." forever.
+    val suggestion by androidx.compose.runtime.produceState<Result<com.kevinushey.quell.dsp.SteadyWindow?>?>(null, meta.id) {
+        val s = vm.series(meta.id)
+        value = if (s == null) Result.failure(IllegalStateException("no samples")) else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            runCatching { com.kevinushey.quell.dsp.AutoTrim.steadyWindow(s.time, s.magnitude()) }
+        }
+    }
     val lineColor = seriesColor(meta.colorIndex)
     val dim = MaterialTheme.colorScheme.onSurfaceVariant
+    val accent = MaterialTheme.colorScheme.tertiary
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Analysis window") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Drag to keep only the steady part of the run. Spectra, the Damper tab and exports use this window.", style = MaterialTheme.typography.bodySmall)
+                val steady = suggestion?.getOrNull()
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        enabled = steady != null,
+                        onClick = { steady?.let { range = it.start.toFloat()..it.end.toFloat() } },
+                    ) { Text("Keep the steady part") }
+                    Text(
+                        when {
+                            suggestion == null -> "Looking for the steady stretch..."
+                            steady == null -> "No steady stretch stands out; drag by hand."
+                            steady.coversAll(duration) -> "The whole run looks steady."
+                            else -> "Steady from %.1f s to %.1f s (level within %.0f dB).".format(java.util.Locale.US, steady.start, steady.end, steady.rangeDb)
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
                 androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().height(80.dp)) {
                     val p = preview ?: return@Canvas
                     val max = (p.maxOrNull() ?: 1f).coerceAtLeast(1e-6f)
@@ -466,6 +492,13 @@ private fun TrimDialog(vm: MainViewModel, meta: DatasetMeta, onDismiss: () -> Un
                     }
                     drawLine(dim, Offset(startX, 0f), Offset(startX, size.height), 2f)
                     drawLine(dim, Offset(endX, 0f), Offset(endX, size.height), 2f)
+                    // The suggested steady stretch, as a bracket under the envelope.
+                    val st = suggestion?.getOrNull()
+                    if (st != null && !st.coversAll(duration)) {
+                        val a = (st.start / duration * size.width).toFloat()
+                        val b = (st.end / duration * size.width).toFloat()
+                        drawLine(accent, Offset(a, size.height - 2f), Offset(b, size.height - 2f), 4f)
+                    }
                 }
                 androidx.compose.material3.RangeSlider(
                     value = range,
