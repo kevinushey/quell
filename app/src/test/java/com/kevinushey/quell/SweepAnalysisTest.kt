@@ -123,6 +123,43 @@ class SweepAnalysisTest {
     }
 
     @Test
+    fun repeatsArePooledWithTighterErrors() {
+        // Three runs at 350 g with 1.8 dB each: the pooled error is 1.8 / sqrt(3) unless the repeats disagree more.
+        val pts = listOf(point(300.0, -2.0, 1.8), point(350.0, -4.0, 1.8), point(350.0, -4.2, 1.8), point(350.0, -3.8, 1.8), point(400.0, -2.0, 1.8))
+        val pooled = SweepAnalysis.pool(pts)
+        assertEquals(3, pooled.size)
+        val mid = pooled[1]
+        assertEquals(3, mid.repeats)
+        assertEquals(-4.0, mid.metric, 1e-9)
+        assertEquals(1.8 / Math.sqrt(3.0), mid.error, 1e-9)
+
+        // Disagreeing repeats widen the error instead.
+        val noisy = SweepAnalysis.pool(listOf(point(350.0, -1.0, 0.1), point(350.0, -5.0, 0.1)))
+        assertEquals(1, noisy.size)
+        assertEquals(2.0, noisy[0].error, 1e-9)
+    }
+
+    @Test
+    fun weightedFitLeansOnThePreciseRuns() {
+        // Exact parabola, one wild point with a huge error: the fit should ignore it.
+        val exact = listOf(300.0, 350.0, 400.0, 450.0).map { m -> point(m, 0.001 * (m - 400) * (m - 400) - 5, 0.1) }
+        val wild = point(500.0, +10.0, 100.0)
+        val fit = SweepAnalysis.fit(exact + wild)!!
+        assertEquals(400.0, fit.extremum, 1.0)
+    }
+
+    @Test
+    fun durationHintSaysHowLongRunsMustBe() {
+        // 17 s runs at 1.8 dB: resolving 1 dB at two sigma needs 0.354 dB per point, 26 times the data.
+        val meta17 = meta("m", 300.0).copy(durationSec = 17.0)
+        val pts = listOf(SweepPoint(meta17, 300.0, -2.0, 25.0, -2.0, 1.8, null))
+        val hint = SweepAnalysis.durationHint(pts)!!
+        assertTrue(hint, hint.startsWith("Each run of about 17 s gives +/- 1.8 dB; about 441 s per value (or 26 repeats"))
+        // Already precise enough: nothing to say.
+        assertEquals(null, SweepAnalysis.durationHint(listOf(SweepPoint(meta17, 300.0, -2.0, 25.0, -2.0, 0.2, null))))
+    }
+
+    @Test
     fun twoValuesPointTheWay() {
         val pts = listOf(point(300.0, -2.0), point(350.0, -4.0))
         val summary = SweepAnalysis.summarize(sweep, pts)

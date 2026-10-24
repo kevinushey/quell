@@ -6,6 +6,7 @@ import com.kevinushey.quell.data.Sweep
 import com.kevinushey.quell.dsp.Modal
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.log10
 import kotlin.math.sqrt
 
@@ -26,9 +27,17 @@ class SweepPoint(
     val problem: String?,
 ) {
     val usable: Boolean get() = problem == null && value != null && metric.isFinite()
+
+    /** Seconds of data behind this run's estimate. */
+    val durationSec: Double get() = (meta.effectiveTrimEnd - meta.trimStart).coerceAtLeast(0.0)
 }
 
-/** Least-squares parabola metric = a x^2 + b x + c through the usable points. */
+/** Every usable run at one parameter value, combined; repeats tighten the estimate. */
+class PooledPoint(val value: Double, val metric: Double, val error: Double, val runs: List<SweepPoint>) {
+    val repeats: Int get() = runs.size
+}
+
+/** Weighted least-squares parabola metric = a x^2 + b x + c through the pooled points. */
 class SweepFit(val a: Double, val b: Double, val c: Double, val residualRms: Double) {
     val extremum: Double get() = -b / (2 * a)
     fun at(x: Double): Double = a * x * x + b * x + c
@@ -36,7 +45,11 @@ class SweepFit(val a: Double, val b: Double, val c: Double, val residualRms: Dou
 
 class SweepSummary(
     val points: List<SweepPoint>,
+    /** Usable runs pooled by value, in value order. */
+    val pooled: List<PooledPoint>,
     val fit: SweepFit?,
+    /** One sigma of the metric for the sweep as a whole: the larger of scatter about the curve and a typical point's error. */
+    val sigma: Double,
     /** Parameter value at the fitted optimum, when the fit has one inside or near the range tried. */
     val optimum: Double?,
     /** Half-width of the parameter interval over which the fit stays within one sigma of the optimum. */
@@ -53,6 +66,9 @@ object SweepAnalysis {
 
     /** Fewest distinct parameter values a parabola can be trusted on. */
     const val MIN_POINTS = 3
+
+    /** Difference between two runs that counts as a real tuning effect, dB; the duration hint aims at resolving it. */
+    const val RESOLVE_DB = 1.0
 
     /** Lower is better for drive runs (peak dB versus baseline); higher is better for tap runs (damping). */
     fun minimizes(kind: ExperimentKind): Boolean = kind != ExperimentKind.TAP
@@ -104,80 +120,118 @@ object SweepAnalysis {
         }
     }
 
-    /** Parabola through the usable points, or null with fewer than MIN_POINTS distinct values. */
-    fun fit(points: List<SweepPoint>): SweepFit? {
-        val pts = points.filter { it.usable }
-        if (pts.map { it.value }.distinct().size < MIN_POINTS)
+    /**
+     * Combines repeated runs at the same value. The metric is the
+     * inverse-variance weighted mean when every run has an error, else the
+     * plain mean; the error is the larger of the propagated error and the
+     * standard error of the repeats, so disagreement between repeats shows.
+     */
+    fun pool(points: List<SweepPoint>): List<PooledPoint> {
+        val groups = points.filter { it.usable }.groupBy { it.value!! }.toSortedMap()
+        return groups.map { (value, runs) ->
+            val weighted = runs.all { it.error.isFinite() && it.error > 0 }
+            val weights = runs.map { if (weighted) 1 / (it.error * it.error) else 1.0 }
+            val wsum = weights.sum()
+            val mean = runs.indices.sumOf { weights[it] * runs[it].metric } / wsum
+            val propagated = if (weighted) 1 / sqrt(wsum) else Double.NaN
+            val sampleSe = if (runs.size >= 2) sqrt(runs.sumOf { (it.metric - mean) * (it.metric - mean) } / (runs.size - 1) / runs.size) else Double.NaN
+            val error = when {
+                runs.size == 1 -> runs[0].error
+                propagated.isFinite() && sampleSe.isFinite() -> maxOf(propagated, sampleSe)
+                propagated.isFinite() -> propagated
+                else -> sampleSe
+            }
+            PooledPoint(value, mean, error, runs)
+        }
+    }
+
+    /** Parabola through the pooled points, or null with fewer than MIN_POINTS distinct values. */
+    fun fit(points: List<SweepPoint>): SweepFit? = fitPooled(pool(points))
+
+    fun fitPooled(pts: List<PooledPoint>): SweepFit? {
+        if (pts.size < MIN_POINTS)
             return null
-        // Normal equations for [u^2 u 1] on u = (x - x0) / scale, so neither large values (grams)
-        // nor tiny steps (N/mm) upset the conditioning; the result is mapped back to x.
-        val x0 = pts.sumOf { it.value!! } / pts.size
-        val scale = (pts.maxOf { it.value!! } - pts.minOf { it.value!! }).takeIf { it > 0 } ?: 1.0
+        // Weighted normal equations for [u^2 u 1] on u = (x - x0) / scale, so neither large values
+        // (grams) nor tiny steps (N/mm) upset the conditioning; the result is mapped back to x.
+        val weighted = pts.all { it.error.isFinite() && it.error > 0 }
+        val x0 = pts.sumOf { it.value } / pts.size
+        val scale = (pts.maxOf { it.value } - pts.minOf { it.value }).takeIf { it > 0 } ?: 1.0
         var s0 = 0.0; var s1 = 0.0; var s2 = 0.0; var s3 = 0.0; var s4 = 0.0
         var t0 = 0.0; var t1 = 0.0; var t2 = 0.0
         for (p in pts) {
-            val x = (p.value!! - x0) / scale
+            val x = (p.value - x0) / scale
             val y = p.metric
-            s0 += 1; s1 += x; s2 += x * x; s3 += x * x * x; s4 += x * x * x * x
-            t0 += y; t1 += x * y; t2 += x * x * y
+            val w = if (weighted) 1 / (p.error * p.error) else 1.0
+            s0 += w; s1 += w * x; s2 += w * x * x; s3 += w * x * x * x; s4 += w * x * x * x * x
+            t0 += w * y; t1 += w * x * y; t2 += w * x * x * y
         }
-        val det = det3(s4, s3, s2, s3, s2, s1, s2, s1, s0)
+        // Normalize by the total weight so the singularity test is scale-free.
+        val det = det3(s4, s3, s2, s3, s2, s1, s2, s1, s0) / (s0 * s0 * s0)
         if (abs(det) < 1e-12)
             return null
-        val au = det3(t2, s3, s2, t1, s2, s1, t0, s1, s0) / det
-        val bu = det3(s4, t2, s2, s3, t1, s1, s2, t0, s0) / det
-        val cu = det3(s4, s3, t2, s3, s2, t1, s2, s1, t0) / det
+        val au = det3(t2, s3, s2, t1, s2, s1, t0, s1, s0) / (det * s0 * s0 * s0)
+        val bu = det3(s4, t2, s2, s3, t1, s1, s2, t0, s0) / (det * s0 * s0 * s0)
+        val cu = det3(s4, s3, t2, s3, s2, t1, s2, s1, t0) / (det * s0 * s0 * s0)
         // Undo the scaling and centring: au u^2 + bu u + cu with u = (x - x0) / scale.
         val a = au / (scale * scale)
         val bb = bu / scale - 2 * a * x0
         val cc = a * x0 * x0 - bu * x0 / scale + cu
         var ss = 0.0
+        var wTotal = 0.0
         for (p in pts) {
-            val d = p.metric - (a * p.value!! * p.value!! + bb * p.value!! + cc)
-            ss += d * d
+            val w = if (weighted) 1 / (p.error * p.error) else 1.0
+            val d = p.metric - (a * p.value * p.value + bb * p.value + cc)
+            ss += w * d * d
+            wTotal += w
         }
-        return SweepFit(a, bb, cc, sqrt(ss / pts.size))
+        // Weighted RMS residual in metric units: with 1/sigma^2 weights this is sigma * sqrt(chi^2 / n).
+        val residual = if (weighted) sqrt(ss / pts.size) * medianError(pts) else sqrt(ss / wTotal)
+        return SweepFit(a, bb, cc, residual)
     }
 
     fun summarize(sweep: Sweep, points: List<SweepPoint>): SweepSummary {
         val minimize = minimizes(sweep.kind)
         val usable = points.filter { it.usable }
-        val distinct = usable.map { it.value }.distinct().size
+        val pooled = pool(points)
+        val distinct = pooled.size
         val unit = sweep.parameter
-        // One sigma for the whole sweep: the measurement error of a typical point (and later the scatter about the curve).
-        val typicalError = usable.map { it.error }.filter { it.isFinite() }.sorted().let { if (it.isEmpty()) 0.0 else it[it.size / 2] }
+        val typicalError = medianError(pooled)
         if (distinct < MIN_POINTS) {
             val note = if (points.any { it.value == null })
                 "Set the ${sweep.parameter.label.lowercase(Locale.US)} on every run, then record at least $MIN_POINTS different values to fit an optimum."
             else
                 "Record at least $MIN_POINTS different values to fit an optimum (${distinct} so far)."
-            return SweepSummary(points, null, null, Double.NaN, note, suggest(sweep, nextAfterTwo(usable, minimize)))
+            return SweepSummary(points, pooled, null, typicalError, null, Double.NaN, note, suggest(sweep, nextAfterTwo(pooled, minimize)))
         }
-        val fit = fit(points) ?: return SweepSummary(points, null, null, Double.NaN, "The values tried do not determine a curve.")
-        val lo = usable.minOf { it.value!! }
-        val hi = usable.maxOf { it.value!! }
+        val fit = fitPooled(pooled)
+            ?: return SweepSummary(points, pooled, null, typicalError, null, Double.NaN, "The values tried do not determine a curve.")
+        val lo = pooled.first().value
+        val hi = pooled.last().value
         val span = hi - lo
         val step = span / (distinct - 1)
-        val best = if (minimize) usable.minByOrNull { it.metric }!! else usable.maxByOrNull { it.metric }!!
+        val best = if (minimize) pooled.minByOrNull { it.metric }!! else pooled.maxByOrNull { it.metric }!!
         val sigma = maxOf(fit.residualRms, typicalError)
-        val spread = usable.maxOf { it.metric } - usable.minOf { it.metric }
-        // Nothing to optimize yet when every run agrees within its error bars.
+        val spread = pooled.maxOf { it.metric } - pooled.minOf { it.metric }
+        // Nothing to optimize yet when every value agrees within its error bars.
         if (sigma > 0 && spread < 2 * sigma) {
-            return SweepSummary(
-                points, fit, null, Double.NaN,
-                "The runs differ by %.1f%s between best and worst, less than twice their uncertainty (%.1f%s). Spread the values further apart or repeat runs before reading an optimum.".format(
-                    Locale.US, spread, if (minimize) " dB" else "", sigma, if (minimize) " dB" else "",
-                ),
-                suggest(sweep, if (best.value!! >= hi) hi + step else lo - step),
-            )
+            val note = buildString {
+                append(
+                    "The values differ by %.1f%s between best and worst, less than twice their uncertainty (%.1f%s). Spread the values further apart or repeat runs before reading an optimum.".format(
+                        Locale.US, spread, if (minimize) " dB" else "", sigma, if (minimize) " dB" else "",
+                    )
+                )
+                if (minimize)
+                    durationHint(usable)?.let { append(" ").append(it) }
+            }
+            return SweepSummary(points, pooled, fit, sigma, null, Double.NaN, note, suggest(sweep, if (best.value >= hi) hi + step else lo - step))
         }
         val curvatureRight = if (minimize) fit.a > 0 else fit.a < 0
         if (!curvatureRight) {
             // The curve bends the wrong way: the best value is at an end, and the trend says which.
-            val further = if (best.value!! >= hi) "larger" else "smaller"
+            val further = if (best.value >= hi) "larger" else "smaller"
             return SweepSummary(
-                points, fit, null, Double.NaN,
-                "No optimum inside %s-%s: the best run is at %s and the trend continues toward %s values. Extend the sweep that way.".format(
+                points, pooled, fit, sigma, null, Double.NaN,
+                "No optimum inside %s-%s: the best value is %s and the trend continues toward %s values. Extend the sweep that way.".format(
                     Locale.US, unit.format(lo), unit.format(hi), unit.format(best.value), further,
                 ),
                 suggest(sweep, if (best.value >= hi) hi + step else lo - step),
@@ -191,7 +245,7 @@ object SweepAnalysis {
             // Head toward it, but no further than one more span: far extrapolations of a parabola are guesses.
             val next = suggest(sweep, x.coerceIn(lo - span, hi + span))
             return SweepSummary(
-                points, fit, x, halfWidth,
+                points, pooled, fit, sigma, x, halfWidth,
                 "The fitted optimum, %s, lies %s the range tried (%s-%s). Extend the sweep toward it before trusting the number.".format(
                     Locale.US, unit.format(x), side, unit.format(lo), unit.format(hi),
                 ),
@@ -200,15 +254,37 @@ object SweepAnalysis {
         }
         val gain = if (minimize) "%.1f dB below baseline".format(Locale.US, -fit.at(x)) else "damping ratio %.4f".format(Locale.US, fit.at(x))
         val pm = if (halfWidth.isFinite()) " (+/- %s at one sigma)".format(Locale.US, unit.format(halfWidth)) else ""
-        // A prediction counts as confirmed once a run sits inside the one-sigma interval around it.
+        // A prediction counts as confirmed once a value sits inside the one-sigma interval around it.
         val reach = if (halfWidth.isFinite()) halfWidth else 0.1 * span
-        val confirmed = usable.any { abs(it.value!! - x) <= reach }
+        val confirmed = pooled.any { abs(it.value - x) <= reach }
         val note = buildString {
             append("Optimum near %s%s, %s.".format(Locale.US, unit.format(x), pm, gain))
             if (!confirmed)
                 append(" No run has been made there yet; the curve predicts it from the neighbours. Record one at %s to confirm.".format(Locale.US, unit.format(x)))
         }
-        return SweepSummary(points, fit, x, halfWidth, note, if (confirmed) null else x)
+        return SweepSummary(points, pooled, fit, sigma, x, halfWidth, note, if (confirmed) null else x)
+    }
+
+    /**
+     * What it would take to tell two values RESOLVE_DB apart at two sigma:
+     * the random error falls with the square root of the run length, so the
+     * answer is a run length (or a number of repeats of the current length).
+     */
+    fun durationHint(usable: List<SweepPoint>): String? {
+        val errors = usable.map { it.error }.filter { it.isFinite() && it > 0 }.sorted()
+        val durations = usable.map { it.durationSec }.filter { it > 0 }.sorted()
+        if (errors.isEmpty() || durations.isEmpty())
+            return null
+        val eNow = errors[errors.size / 2]
+        val tNow = durations[durations.size / 2]
+        // Two points each with error e differ by RESOLVE_DB at two sigma when 2 * sqrt(2) * e = RESOLVE_DB.
+        val eTarget = RESOLVE_DB / (2 * sqrt(2.0))
+        if (eNow <= eTarget)
+            return null
+        val factor = (eNow / eTarget) * (eNow / eTarget)
+        return "Each run of about %.0f s gives +/- %.1f dB; about %.0f s per value (or %d repeats of the current length) would resolve %.0f dB differences.".format(
+            Locale.US, tNow, eNow, tNow * factor, ceil(factor).toInt(), RESOLVE_DB,
+        )
     }
 
     /** A recommendation the parameter can take: masses and stiffnesses stop at zero. */
@@ -219,13 +295,17 @@ object SweepAnalysis {
     }
 
     /** With two values, the better one says which way to go; with one or none, nothing does. */
-    private fun nextAfterTwo(usable: List<SweepPoint>, minimize: Boolean): Double? {
-        val values = usable.mapNotNull { it.value }.distinct().sorted()
-        if (values.size != 2)
+    private fun nextAfterTwo(pooled: List<PooledPoint>, minimize: Boolean): Double? {
+        if (pooled.size != 2)
             return null
-        val best = if (minimize) usable.minByOrNull { it.metric }!! else usable.maxByOrNull { it.metric }!!
-        val step = values[1] - values[0]
-        return if (best.value == values[1]) values[1] + step else values[0] - step
+        val best = if (minimize) pooled.minByOrNull { it.metric }!! else pooled.maxByOrNull { it.metric }!!
+        val step = pooled[1].value - pooled[0].value
+        return if (best.value == pooled[1].value) pooled[1].value + step else pooled[0].value - step
+    }
+
+    private fun medianError(pts: List<PooledPoint>): Double {
+        val e = pts.map { it.error }.filter { it.isFinite() }.sorted()
+        return if (e.isEmpty()) 0.0 else e[e.size / 2]
     }
 
     private fun det3(

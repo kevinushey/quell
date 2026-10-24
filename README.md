@@ -38,7 +38,11 @@ record directly from the phone's own accelerometer.
 - Sweeps: group the runs of a tuning session in which one damper parameter
   (mass, stiffness, position) is stepped, record each run from the sweep with
   the next value pre-filled, and read the fitted optimum with its uncertainty
-  against the baseline; export the table as CSV.
+  against the baseline; export the table as CSV. Repeated runs at one value
+  are pooled, the fit is weighted by each point's uncertainty and shaded to one
+  sigma, and the reading says how long runs must be to resolve a 1 dB
+  difference.
+- Optional one-sigma uncertainty band around every spectrum in dB views.
 - Tap-test recording mode: strike the structure, each ring-down is fitted for
   natural frequency and damping ratio on the spot; beating between two decay
   frequencies is flagged as a coupled absorber.

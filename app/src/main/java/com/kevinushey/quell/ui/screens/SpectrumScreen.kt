@@ -70,6 +70,23 @@ fun SpectrumScreen(vm: MainViewModel, exportHost: ChartExportHost, onImport: () 
         val series = remember(results) {
             results.map { r -> ChartSeries(r.meta.id, r.meta.name, seriesColor(r.meta.colorIndex), r.normalized.freq, r.display) }
         }
+        // The random error is a constant number of dB for a given run, so the band is the curve shifted up and down.
+        val inDb = settings.decibels && !settings.normalization.isDecibelDomain
+        val bands = remember(results, settings.showUncertainty, inDb) {
+            if (!settings.showUncertainty || !inDb)
+                emptyList()
+            else
+                results.filter { it.randomErrorDb.isFinite() }.map { r ->
+                    val e = r.randomErrorDb
+                    com.kevinushey.quell.ui.chart.ChartBand(
+                        r.meta.id,
+                        seriesColor(r.meta.colorIndex),
+                        r.normalized.freq,
+                        DoubleArray(r.display.size) { r.display[it] - e },
+                        DoubleArray(r.display.size) { r.display[it] + e },
+                    )
+                }
+        }
         val peaks = remember(results) {
             results.flatMap { r ->
                 val c = seriesColor(r.meta.colorIndex)
@@ -146,6 +163,7 @@ fun SpectrumScreen(vm: MainViewModel, exportHost: ChartExportHost, onImport: () 
                     xScale = if (settings.logFrequency) AxisScale.LOG else AxisScale.LINEAR,
                     verticalMarkers = markers,
                     pointMarkers = peaks,
+                    bands = bands,
                     viewportKey = listOf(settings.channel, settings.normalization, settings.decibels, settings.logFrequency, settings.minFreq, settings.maxFreq),
                     xValueFormatter = { formatHz(it) },
                     yValueFormatter = { v -> if (unit.isEmpty()) com.kevinushey.quell.ui.chart.Axis.formatValue(v) else "%.1f %s".format(Locale.US, v, unit) },

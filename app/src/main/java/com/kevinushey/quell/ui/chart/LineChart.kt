@@ -51,6 +51,9 @@ fun LineChart(
     xScale: AxisScale = AxisScale.LINEAR,
     verticalMarkers: List<VerticalMarker> = emptyList(),
     pointMarkers: List<PointMarker> = emptyList(),
+    /** Shaded uncertainty regions, drawn under the series. */
+    bands: List<ChartBand> = emptyList(),
+    errorBars: List<ErrorBar> = emptyList(),
     showZeroLine: Boolean = false,
     /** Changing this key resets zoom and crosshair. */
     viewportKey: Any? = null,
@@ -66,7 +69,7 @@ fun LineChart(
     val titleStyle = TextStyle(color = colors.onSurface, fontSize = 11.sp)
     val readoutStyle = TextStyle(color = colors.onSurface, fontSize = 11.sp)
 
-    val seriesBounds = remember(series, xScale) { computeBounds(series, xScale) }
+    val seriesBounds = remember(series, bands, errorBars, xScale) { computeBounds(series, xScale, bands, errorBars) }
     val dataBounds = fixedBounds ?: seriesBounds
     var viewport by remember(viewportKey, dataBounds) { mutableStateOf(dataBounds) }
     LaunchedEffect(viewport) {
@@ -213,8 +216,26 @@ fun LineChart(
                 drawText(layout, topLeft = Offset(px + 3.dp.toPx(), rect.top + 2.dp.toPx()))
             }
 
+            for (b in bands)
+                drawBand(b, rect, vp, xScale)
+
             for (s in series)
                 drawSeries(s, rect, vp, xScale)
+
+            val cap = 3.dp.toPx()
+            for (e in errorBars) {
+                if (!e.error.isFinite() || e.error <= 0)
+                    continue
+                val xv = toDomain(e.x, xScale)
+                if (xv < vp.xMin || xv > vp.xMax)
+                    continue
+                val px = rect.left + ((xv - vp.xMin) / vp.width * rect.width).toFloat()
+                val top = rect.bottom - ((e.y + e.error - vp.yMin) / vp.height * rect.height).toFloat()
+                val bottom = rect.bottom - ((e.y - e.error - vp.yMin) / vp.height * rect.height).toFloat()
+                drawLine(e.color, Offset(px, top), Offset(px, bottom), 1.5.dp.toPx())
+                drawLine(e.color, Offset(px - cap, top), Offset(px + cap, top), 1.5.dp.toPx())
+                drawLine(e.color, Offset(px - cap, bottom), Offset(px + cap, bottom), 1.5.dp.toPx())
+            }
 
             // Tallest markers get labelled first; later labels that would overlap are skipped (the dot still shows).
             val placedLabels = ArrayList<Rect>()
@@ -314,28 +335,44 @@ private fun toDomain(x: Double, scale: AxisScale): Double =
 private fun fromDomain(v: Double, scale: AxisScale): Double =
     if (scale == AxisScale.LOG) 10.0.pow(v) else v
 
-internal fun computeBounds(series: List<ChartSeries>, xScale: AxisScale): Viewport? {
+internal fun computeBounds(
+    series: List<ChartSeries>,
+    xScale: AxisScale,
+    bands: List<ChartBand> = emptyList(),
+    errorBars: List<ErrorBar> = emptyList(),
+): Viewport? {
     var xMin = Double.POSITIVE_INFINITY
     var xMax = Double.NEGATIVE_INFINITY
     var yMin = Double.POSITIVE_INFINITY
     var yMax = Double.NEGATIVE_INFINITY
-    for (s in series) {
-        for (i in s.x.indices) {
-            val xv = s.x[i]
-            val yv = s.y[i]
-            if (xScale == AxisScale.LOG && xv <= 0)
-                continue
-            if (yv.isNaN() || yv.isInfinite())
-                continue
-            val xd = toDomain(xv, xScale)
-            if (xd < xMin)
-                xMin = xd
-            if (xd > xMax)
-                xMax = xd
-            if (yv < yMin)
-                yMin = yv
-            if (yv > yMax)
-                yMax = yv
+    fun include(xv: Double, yv: Double) {
+        if (xScale == AxisScale.LOG && xv <= 0)
+            return
+        if (yv.isNaN() || yv.isInfinite())
+            return
+        val xd = toDomain(xv, xScale)
+        if (xd < xMin)
+            xMin = xd
+        if (xd > xMax)
+            xMax = xd
+        if (yv < yMin)
+            yMin = yv
+        if (yv > yMax)
+            yMax = yv
+    }
+    for (s in series)
+        for (i in s.x.indices)
+            include(s.x[i], s.y[i])
+    for (b in bands) {
+        for (i in b.x.indices) {
+            include(b.x[i], b.yLow[i])
+            include(b.x[i], b.yHigh[i])
+        }
+    }
+    for (e in errorBars) {
+        if (e.error.isFinite() && e.error > 0) {
+            include(e.x, e.y - e.error)
+            include(e.x, e.y + e.error)
         }
     }
     if (xMin.isInfinite() || yMin.isInfinite())
@@ -408,6 +445,59 @@ private fun DrawScope.drawAxesAndGrid(
             drawText(layout, topLeft = Offset(-rect.center.y - layout.size.width / 2, 2.dp.toPx()))
         }
     }
+}
+
+/** Filled region, aggregated per pixel column so dense bands cost no more than dense lines. */
+private fun DrawScope.drawBand(b: ChartBand, rect: Rect, vp: Viewport, xScale: AxisScale) {
+    val n = b.x.size
+    if (n == 0)
+        return
+    val xMinLin = fromDomain(vp.xMin, xScale)
+    val xMaxLin = fromDomain(vp.xMax, xScale)
+    val start = (lowerBound(b.x, xMinLin) - 1).coerceIn(0, n - 1)
+    val end = (lowerBound(b.x, xMaxLin) + 1).coerceIn(0, n - 1)
+    if (end <= start)
+        return
+    val sx = rect.width / vp.width
+    val sy = rect.height / vp.height
+
+    // One (low, high) pair per pixel column: the lowest low and the highest high that land in it.
+    val cols = ArrayList<Triple<Float, Float, Float>>()
+    var i = start
+    while (i <= end) {
+        val xv = b.x[i]
+        if (xScale == AxisScale.LOG && xv <= 0) {
+            i++
+            continue
+        }
+        val col = (rect.left + ((toDomain(xv, xScale) - vp.xMin) * sx).toFloat()).toInt()
+        var lo = Double.POSITIVE_INFINITY
+        var hi = Double.NEGATIVE_INFINITY
+        while (i <= end) {
+            val xi = b.x[i]
+            val ci = (rect.left + ((toDomain(xi, xScale) - vp.xMin) * sx).toFloat()).toInt()
+            if (ci != col)
+                break
+            if (!b.yLow[i].isNaN() && b.yLow[i] < lo)
+                lo = b.yLow[i]
+            if (!b.yHigh[i].isNaN() && b.yHigh[i] > hi)
+                hi = b.yHigh[i]
+            i++
+        }
+        if (lo.isInfinite() || hi.isInfinite())
+            continue
+        cols.add(Triple(col + 0.5f, rect.bottom - ((lo - vp.yMin) * sy).toFloat(), rect.bottom - ((hi - vp.yMin) * sy).toFloat()))
+    }
+    if (cols.size < 2)
+        return
+    val path = Path()
+    path.moveTo(cols[0].first, cols[0].third)
+    for (c in cols)
+        path.lineTo(c.first, c.third)
+    for (c in cols.asReversed())
+        path.lineTo(c.first, c.second)
+    path.close()
+    drawPath(path, color = b.color.copy(alpha = 0.18f))
 }
 
 private fun DrawScope.drawSeries(s: ChartSeries, rect: Rect, vp: Viewport, xScale: AxisScale) {

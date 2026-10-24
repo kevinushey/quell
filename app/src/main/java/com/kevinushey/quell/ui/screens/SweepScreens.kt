@@ -59,7 +59,9 @@ import com.kevinushey.quell.ui.MainViewModel
 import com.kevinushey.quell.ui.SweepAnalysis
 import com.kevinushey.quell.ui.SweepPoint
 import com.kevinushey.quell.ui.SweepSummary
+import com.kevinushey.quell.ui.chart.ChartBand
 import com.kevinushey.quell.ui.chart.ChartSeries
+import com.kevinushey.quell.ui.chart.ErrorBar
 import com.kevinushey.quell.ui.chart.LineChart
 import com.kevinushey.quell.ui.chart.PointMarker
 import com.kevinushey.quell.ui.chart.VerticalMarker
@@ -287,10 +289,9 @@ fun SweepScreen(vm: MainViewModel, sweepId: String, onRecord: (String) -> Unit, 
             }
 
             val s = summary
-            val usable = s?.usable ?: emptyList()
-            if (usable.size >= 2) {
+            if (s != null && s.pooled.size >= 2) {
                 item {
-                    SweepChart(sweep, s!!, isTap)
+                    SweepChart(sweep, s, isTap)
                 }
             }
             item {
@@ -328,8 +329,9 @@ fun SweepScreen(vm: MainViewModel, sweepId: String, onRecord: (String) -> Unit, 
                                 )
                             }
                             Text(
-                                if (isTap) "Damping ratio from the ring-down fits; +/- is the standard error over the taps in each run."
-                                else "Peak dB is the tallest in-band peak relative to the baseline's; +/- is the one-sigma random error of the pair of PSD estimates.",
+                                (if (isTap) "Damping ratio from the ring-down fits; +/- is the standard error over the taps in each run."
+                                else "Peak dB is the tallest in-band peak relative to the baseline's; +/- is the one-sigma random error of the pair of PSD estimates.") +
+                                    " Repeated runs at one value are pooled on the chart.",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(top = 6.dp),
@@ -387,22 +389,30 @@ fun SweepScreen(vm: MainViewModel, sweepId: String, onRecord: (String) -> Unit, 
 
 @Composable
 private fun SweepChart(sweep: Sweep, s: SweepSummary, isTap: Boolean) {
-    val usable = s.usable.sortedBy { it.value!! }
-    val xs = DoubleArray(usable.size) { usable[it].value!! }
-    val ys = DoubleArray(usable.size) { usable[it].metric }
+    // Pooled points: repeats at one value are one point with a tighter error bar.
+    val pooled = s.pooled
+    val xs = DoubleArray(pooled.size) { pooled[it].value }
+    val ys = DoubleArray(pooled.size) { pooled[it].metric }
     val primary = MaterialTheme.colorScheme.primary
     val tertiary = MaterialTheme.colorScheme.tertiary
     val series = ArrayList<ChartSeries>()
     series.add(ChartSeries("runs", "Runs", primary, xs, ys, strokeWidthDp = 2.0f))
+    val bands = ArrayList<ChartBand>()
     val fit = s.fit
-    if (fit != null) {
+    // Without an optimum the curve would only invite a conclusion the reading declines to draw.
+    if (fit != null && s.optimum != null) {
         // Draw the curve a little past the data so an optimum just outside is visible.
         val span = (xs.last() - xs.first()).coerceAtLeast(1e-9)
         val from = xs.first() - 0.1 * span
         val to = xs.last() + 0.1 * span
         val fx = DoubleArray(60) { from + (to - from) * it / 59 }
-        series.add(ChartSeries("fit", "Parabola fit", tertiary, fx, DoubleArray(fx.size) { fit.at(fx[it]) }, dashed = true))
+        val fy = DoubleArray(fx.size) { fit.at(fx[it]) }
+        series.add(ChartSeries("fit", "Parabola fit", tertiary, fx, fy, dashed = true))
+        // One sigma around the curve: differences inside the shading are not resolved.
+        if (s.sigma.isFinite() && s.sigma > 0)
+            bands.add(ChartBand("sigma", tertiary, fx, DoubleArray(fx.size) { fy[it] - s.sigma }, DoubleArray(fx.size) { fy[it] + s.sigma }))
     }
+    val errorBars = pooled.map { ErrorBar(it.value, it.metric, it.error, primary) }
     val markers = ArrayList<VerticalMarker>()
     s.optimum?.let { markers.add(VerticalMarker(it, "optimum", tertiary)) }
     ChartCard(
@@ -416,9 +426,14 @@ private fun SweepChart(sweep: Sweep, s: SweepSummary, isTap: Boolean) {
             xLabel = if (sweep.parameter.unit.isEmpty()) sweep.parameter.label else "${sweep.parameter.label} (${sweep.parameter.unit})",
             yLabel = if (isTap) "Damping ratio" else "Peak (dB vs baseline)",
             verticalMarkers = markers,
-            pointMarkers = usable.map { PointMarker(it.value!!, it.metric, sweep.parameter.format(it.value), seriesColor(it.meta.colorIndex)) },
+            bands = bands,
+            errorBars = errorBars,
+            pointMarkers = pooled.map { p ->
+                val label = sweep.parameter.format(p.value) + if (p.repeats > 1) " x${p.repeats}" else ""
+                PointMarker(p.value, p.metric, label, seriesColor(p.runs.first().meta.colorIndex))
+            },
             showZeroLine = !isTap,
-            viewportKey = usable.map { it.meta.id to it.value },
+            viewportKey = pooled.map { it.value to it.repeats },
             xValueFormatter = { sweep.parameter.format(it) },
             yValueFormatter = { if (isTap) "%.4f".format(Locale.US, it) else "%+.1f dB".format(Locale.US, it) },
         )

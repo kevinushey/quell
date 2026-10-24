@@ -19,6 +19,8 @@ data class AnalysisSettings(
     val maxFreq: Double = 0.0,
     val smoothingBins: Int = 1,
     val showPeaks: Boolean = true,
+    /** Shade +/- one sigma of random error around each spectrum (dB views only). */
+    val showUncertainty: Boolean = false,
     val peakCount: Int = 3,
     val referenceId: String? = null,
     val wheelMarkers: WheelMarkers = WheelMarkers(),

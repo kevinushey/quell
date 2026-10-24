@@ -143,6 +143,17 @@ fun AnalysisOptionsSheet(
                 }
                 Switch(checked = wm.enabled, onCheckedChange = { on -> onChange { it.copy(wheelMarkers = it.wheelMarkers.copy(enabled = on)) } })
             }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Uncertainty band", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "Shades +/- one sigma of random error around each spectrum in dB views. Differences inside the shading are not measured; longer runs narrow it.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = settings.showUncertainty, onCheckedChange = { on -> onChange { it.copy(showUncertainty = on) } })
+            }
             if (wm.enabled) {
                 val speedLabel = if (useMph) "Speed (mph)" else "Speed (km/h)"
                 val speedValue = if (useMph) wm.speedKph / 1.609344 else wm.speedKph
