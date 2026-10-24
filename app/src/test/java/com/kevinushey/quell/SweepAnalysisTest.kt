@@ -133,12 +133,12 @@ class SweepAnalysisTest {
         val mid = pooled[1]
         assertEquals(3, mid.repeats)
         assertEquals(-4.0, mid.metric, 1e-9)
-        assertEquals(1.8 / Math.sqrt(3.0), mid.error, 1e-9)
+        assertEquals(1.8 / Math.sqrt(3.0), mid.ownError, 1e-9)
 
         // Disagreeing repeats widen the error instead.
         val noisy = SweepAnalysis.pool(listOf(point(350.0, -1.0, 0.1), point(350.0, -5.0, 0.1)))
         assertEquals(1, noisy.size)
-        assertEquals(2.0, noisy[0].error, 1e-9)
+        assertEquals(2.0, noisy[0].ownError, 1e-9)
     }
 
     @Test

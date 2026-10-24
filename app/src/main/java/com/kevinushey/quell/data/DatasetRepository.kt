@@ -225,6 +225,8 @@ class DatasetRepository(private val context: Context) {
             _datasets.value = nextDatasets
             persistSweeps(nextSweeps)
             _sweeps.value = nextSweeps
+            // What a restore brought back is as complete as the folder allows; the lost-index warning has done its job.
+            _degraded.value = false
         }
     }
 

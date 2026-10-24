@@ -128,6 +128,16 @@ class SyncPlanTest {
     }
 
     @Test
+    fun anIndexWriteMayOnlyDropExplicitDeletions() {
+        // Remote lists a, b, c; we merged a, b; c was deleted here: fine. c not deleted: the picture is wrong, refuse.
+        assertTrue(SyncPlan.indexWriteIsSafe(listOf("a", "b"), listOf("a", "b", "c"), setOf("c")))
+        assertFalse(SyncPlan.indexWriteIsSafe(listOf("a", "b"), listOf("a", "b", "c"), emptySet()))
+        // An unreadable remote index would look empty; a merge from it can never satisfy a populated listing.
+        assertFalse(SyncPlan.indexWriteIsSafe(emptyList(), listOf("a"), emptySet()))
+        assertTrue(SyncPlan.indexWriteIsSafe(emptyList(), emptyList(), emptySet()))
+    }
+
+    @Test
     fun csvCopiesFollowTheToggle() {
         val r = remote("a.bin", "a-run.csv", "index.json", "sweeps.json")
         val state = SyncState(mirrored = setOf("a"), csvNames = mapOf("a" to "a-run.csv"), indexHash = "i1", sweepsHash = "s1")

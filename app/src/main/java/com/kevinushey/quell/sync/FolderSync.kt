@@ -170,6 +170,10 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         val indexHash = sha1(indexBytes)
         val sweepsHash = sha1(sweepsBytes)
 
+        // Belt and braces: a merged index can only be shorter than the folder's by what was deleted here.
+        if (!SyncPlan.indexWriteIsSafe(mergedIndex.map { it.id }, remoteIndex.map { it.id }, deleted))
+            throw IllegalStateException("The folder's index lists datasets this pass cannot account for; nothing was written")
+
         val localSizes = metas.associate { it.id to repo.datasetFile(it.id).length() }
         val plan = SyncPlan.plan(
             metas.map { it.id },
@@ -241,19 +245,40 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         return MirrorOutcome(metas.count { it.id in mirrored }, plan.notOnThisPhone.size)
     }
 
-    /** The folder's own index; empty when there is none or it cannot be read. Only UUID-shaped ids are trusted. */
+    /**
+     * The folder's own index: empty only when the folder has none. A file
+     * that is there but cannot be read or decoded right now (provider
+     * offline, content not yet downloaded, a write cut short) throws, so the
+     * pass stops before it can write an index that forgets those entries.
+     * Only UUID-shaped ids are trusted.
+     */
     private fun remoteIndex(remote: Map<String, Child>): List<DatasetMeta> {
         val uri = remote["index.json"]?.uri ?: return emptyList()
-        val text = runCatching { context.contentResolver.openInputStream(uri)?.use { String(it.readBytes(), Charsets.UTF_8) } }.getOrNull() ?: return emptyList()
-        return runCatching { DatasetRepository.indexJson.decodeFromString<List<DatasetMeta>>(DatasetRepository.migrateIndex(text)) }
-            .getOrDefault(emptyList())
-            .filter { ID_SHAPE.matches(it.id) }
+        val text = readText(uri, "index.json")
+        return try {
+            DatasetRepository.indexJson.decodeFromString<List<DatasetMeta>>(DatasetRepository.migrateIndex(text)).filter { ID_SHAPE.matches(it.id) }
+        } catch (e: Exception) {
+            throw IllegalStateException("The folder's index.json could not be decoded; nothing was written. It will be retried.", e)
+        }
     }
 
     private fun remoteSweeps(remote: Map<String, Child>): List<Sweep> {
         val uri = remote["sweeps.json"]?.uri ?: return emptyList()
-        val text = runCatching { context.contentResolver.openInputStream(uri)?.use { String(it.readBytes(), Charsets.UTF_8) } }.getOrNull() ?: return emptyList()
-        return runCatching { DatasetRepository.indexJson.decodeFromString<List<Sweep>>(text) }.getOrDefault(emptyList()).filter { ID_SHAPE.matches(it.id) }
+        val text = readText(uri, "sweeps.json")
+        return try {
+            DatasetRepository.indexJson.decodeFromString<List<Sweep>>(text).filter { ID_SHAPE.matches(it.id) }
+        } catch (e: Exception) {
+            throw IllegalStateException("The folder's sweeps.json could not be decoded; nothing was written. It will be retried.", e)
+        }
+    }
+
+    private fun readText(uri: Uri, name: String): String {
+        val stream = try {
+            context.contentResolver.openInputStream(uri)
+        } catch (e: Exception) {
+            throw IllegalStateException("The folder's $name could not be read right now; it will be retried.", e)
+        } ?: throw IllegalStateException("The folder's $name could not be read right now; it will be retried.")
+        return stream.use { String(it.readBytes(), Charsets.UTF_8) }
     }
 
     private companion object {

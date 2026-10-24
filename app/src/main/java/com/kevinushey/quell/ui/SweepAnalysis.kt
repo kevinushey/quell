@@ -38,8 +38,12 @@ class SweepPoint(
     val durationSec: Double get() = (meta.effectiveTrimEnd - meta.trimStart).coerceAtLeast(0.0)
 }
 
-/** Every usable run at one parameter value, combined; repeats tighten the estimate. */
-class PooledPoint(val value: Double, val metric: Double, val error: Double, val ownError: Double, val runs: List<SweepPoint>) {
+/**
+ * Every usable run at one parameter value, combined; repeats tighten the
+ * estimate. Only the runs' own error is pooled: the baseline's share is common
+ * to every value and belongs to a level, not to a comparison.
+ */
+class PooledPoint(val value: Double, val metric: Double, val ownError: Double, val runs: List<SweepPoint>) {
     val repeats: Int get() = runs.size
 }
 
@@ -140,17 +144,14 @@ object SweepAnalysis {
             val wsum = weights.sum()
             val mean = runs.indices.sumOf { weights[it] * runs[it].metric } / wsum
             val sampleSe = if (runs.size >= 2) sqrt(runs.sumOf { (it.metric - mean) * (it.metric - mean) } / (runs.size - 1) / runs.size) else Double.NaN
-            fun combine(errors: List<Double>): Double {
-                val finite = errors.all { it.isFinite() && it > 0 }
-                val propagated = if (finite) 1 / sqrt(errors.sumOf { 1 / (it * it) }) else Double.NaN
-                return when {
-                    runs.size == 1 -> errors[0]
-                    propagated.isFinite() && sampleSe.isFinite() -> maxOf(propagated, sampleSe)
-                    propagated.isFinite() -> propagated
-                    else -> sampleSe
-                }
+            val propagated = if (weighted) 1 / sqrt(wsum) else Double.NaN
+            val ownError = when {
+                runs.size == 1 -> runs[0].ownError
+                propagated.isFinite() && sampleSe.isFinite() -> maxOf(propagated, sampleSe)
+                propagated.isFinite() -> propagated
+                else -> sampleSe
             }
-            PooledPoint(value, mean, combine(runs.map { it.error }), combine(runs.map { it.ownError }), runs)
+            PooledPoint(value, mean, ownError, runs)
         }
     }
 

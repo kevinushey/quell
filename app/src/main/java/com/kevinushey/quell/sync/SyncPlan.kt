@@ -33,6 +33,16 @@ class SyncPlan(
 
     companion object {
         /**
+         * The folder's index may only lose entries the user deleted here. Any
+         * other shrink means our picture of the folder is wrong (an unreadable
+         * index, a transient provider failure) and the write must not happen.
+         */
+        fun indexWriteIsSafe(mergedIds: Collection<String>, remoteIds: Collection<String>, deletedIds: Set<String>): Boolean {
+            val merged = mergedIds.toSet()
+            return remoteIds.all { it in merged || it in deletedIds }
+        }
+
+        /**
          * Bins are immutable, so one copy per id is enough; a missing remote
          * file, or one whose size disagrees with the local file (a copy cut
          * short), is written again. Only datasets the user deleted on this
