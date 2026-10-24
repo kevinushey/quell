@@ -7,6 +7,7 @@ data class ParsedRun(
     val recordedAt: String? = null,
     val extraFields: Map<String, String> = emptyMap(),
     val kind: ExperimentKind = ExperimentKind.GENERAL,
+    val locationMarks: List<Double> = emptyList(),
 )
 
 class ImportException(message: String, cause: Throwable? = null) : Exception(message, cause)

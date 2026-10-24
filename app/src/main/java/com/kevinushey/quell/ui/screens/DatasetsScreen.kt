@@ -79,6 +79,7 @@ private sealed interface Dialog {
     data class Mass(val meta: DatasetMeta) : Dialog
     data class Trim(val meta: DatasetMeta) : Dialog
     data class Taps(val meta: DatasetMeta) : Dialog
+    data class Locate(val meta: DatasetMeta) : Dialog
     data class Kind(val meta: DatasetMeta) : Dialog
 }
 
@@ -135,6 +136,7 @@ fun DatasetsScreen(vm: MainViewModel, onImport: () -> Unit, onRecord: () -> Unit
                                 RowAction.MASS -> dialog = Dialog.Mass(meta)
                                 RowAction.TRIM -> dialog = Dialog.Trim(meta)
                                 RowAction.TAPS -> dialog = Dialog.Taps(meta)
+                                RowAction.LOCATE -> dialog = Dialog.Locate(meta)
                                 RowAction.REFERENCE -> vm.setReference(if (meta.id == settings.referenceId) null else meta.id)
                                 RowAction.SOLO -> vm.soloVisible(meta.id)
                                 RowAction.UP -> vm.move(meta.id, -1)
@@ -182,6 +184,7 @@ fun DatasetsScreen(vm: MainViewModel, onImport: () -> Unit, onRecord: () -> Unit
             dialog = null
         }
         is Dialog.Taps -> TapResultsDialog(vm, d.meta, settings.tapThreshold) { dialog = null }
+        is Dialog.Locate -> LocateResultsDialog(vm, d.meta, settings.tapThreshold) { dialog = null }
         is Dialog.Kind -> KindDialog(d.meta.kind, onDismiss = { dialog = null }) {
             vm.setKind(d.meta.id, it)
             dialog = null
@@ -208,6 +211,7 @@ private enum class RowAction(val label: String) {
     MASS("Set damper mass"),
     TRIM("Trim time range"),
     TAPS("Analyze taps (ring-down)"),
+    LOCATE("Antinode results"),
     REFERENCE("Use as reference"),
     SOLO("Show only this"),
     UP("Move up"),
@@ -253,6 +257,8 @@ private fun DatasetRow(
                     meta.damperMassGrams?.let { add("%.1f g".format(java.util.Locale.US, it)) }
                     if (sweepName != null)
                         add("sweep: $sweepName")
+                    if (meta.locationMarks.isNotEmpty())
+                        add("antinode search, ${meta.locationMarks.size + 1} locations")
                     if (meta.isTrimmed)
                         add("trimmed %.1f-%.1f s".format(java.util.Locale.US, meta.trimStart, meta.effectiveTrimEnd))
                 }
@@ -269,6 +275,8 @@ private fun DatasetRow(
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     for (a in RowAction.entries) {
                         if (a == RowAction.UP && isFirst || a == RowAction.DOWN && isLast)
+                            continue
+                        if (a == RowAction.LOCATE && meta.locationMarks.isEmpty())
                             continue
                         if (a == RowAction.DELETE)
                             HorizontalDivider()
@@ -486,6 +494,39 @@ private fun TrimDialog(vm: MainViewModel, meta: DatasetMeta, onDismiss: () -> Un
                 TextButton(onClick = onDismiss) { Text("Cancel") }
             }
         },
+    )
+}
+
+@Composable
+private fun LocateResultsDialog(vm: MainViewModel, meta: DatasetMeta, threshold: Double, onDismiss: () -> Unit) {
+    val summary by androidx.compose.runtime.produceState<Result<com.kevinushey.quell.ui.LocateSummary>?>(null, meta.id, meta.trimStart, meta.trimEnd, threshold) {
+        val s = vm.tapSummary(meta, threshold)
+        value = if (s != null) Result.success(com.kevinushey.quell.ui.LocateAnalysis.summarize(s.taps, meta.locationMarks)) else Result.failure(IllegalStateException("analysis failed"))
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Antinode search") },
+        text = {
+            val s = summary?.getOrNull()
+            when {
+                summary == null -> Text("Analyzing...")
+                s == null -> Text("This recording could not be analyzed. Adjust its analysis window to exclude any gap, then try again.")
+                else -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(s.note, style = MaterialTheme.typography.bodySmall)
+                    if (s.ranked.isNotEmpty())
+                        Text("Per location (strongest first)", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 6.dp))
+                    for (l in s.ranked)
+                        Text(
+                            "%s: %d taps, shape %.2f, ring %.2f m/s^2, fn %.1f Hz".format(java.util.Locale.US, l.label, l.taps, s.shape(l), l.meanAmplitude, l.meanFreq),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    val silent = s.locations.filter { it.taps == 0 }
+                    if (silent.isNotEmpty())
+                        Text("No clean tap at ${silent.joinToString { it.label.lowercase(java.util.Locale.US) }}.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
     )
 }
 

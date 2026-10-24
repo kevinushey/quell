@@ -43,6 +43,9 @@ import com.kevinushey.quell.data.ParsedRun
 import com.kevinushey.quell.ui.components.parseDecimal
 import com.kevinushey.quell.ui.TapTracker
 import com.kevinushey.quell.ui.TapSummary
+import com.kevinushey.quell.ui.LocateAnalysis
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.runtime.saveable.rememberSaveable
 import com.kevinushey.quell.dsp.Channel
 import com.kevinushey.quell.dsp.Normalization
@@ -76,6 +79,10 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
     var liveSpectrum by remember { mutableStateOf<ChartSeries?>(null) }
     var kind by rememberSaveable { mutableStateOf(sweep?.kind ?: ExperimentKind.GENERAL) }
     val tapMode = kind == ExperimentKind.TAP
+    // Antinode search: a tap test whose taps are grouped by location marks.
+    var locating by rememberSaveable { mutableStateOf(false) }
+    val marks = remember { mutableStateListOf<Double>() }
+    fun finished(run: ParsedRun): ParsedRun = run.copy(kind = kind, locationMarks = if (tapMode && locating) marks.toList() else emptyList())
     var liveTaps by remember { mutableStateOf<TapSummary?>(null) }
     var leaveRequested by remember { mutableStateOf(false) }
     val settings by vm.analysis.collectAsStateWithLifecycle()
@@ -102,7 +109,7 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
                         vm.message("Recording too short to keep")
                         onDone()
                     } else {
-                        pending = run.copy(kind = kind)
+                        pending = finished(run)
                     }
                 }) { Text("Stop and save") }
             },
@@ -133,13 +140,15 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
     LaunchedEffect(status.limitReached) {
         if (status.limitReached && pending == null) {
             vm.message("Recording stopped at the ${formatCount(recorder.maxSamples)} sample limit")
-            pending = recorder.stop()?.copy(kind = kind)
+            pending = recorder.stop()?.let { finished(it) }
         }
     }
 
     LaunchedEffect(status.recording, tapMode) {
         liveSpectrum = null
         liveTaps = null
+        if (status.recording)
+            marks.clear()
         // Finalized taps are kept; each pass analyzes only the capture since the last one.
         val tracker = TapTracker(settings.tapThreshold)
         while (status.recording) {
@@ -188,10 +197,27 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
                 for (k in listOf(ExperimentKind.DRIVE, ExperimentKind.TAP)) {
                     FilterChip(
                         selected = kind == k,
-                        onClick = { if (!status.recording) kind = if (kind == k) ExperimentKind.GENERAL else k },
+                        onClick = {
+                            if (status.recording)
+                                return@FilterChip
+                            kind = if (kind == k) ExperimentKind.GENERAL else k
+                            if (kind != ExperimentKind.TAP)
+                                locating = false
+                        },
                         label = { Text(k.label) },
                     )
                 }
+                FilterChip(
+                    selected = locating,
+                    onClick = {
+                        if (status.recording)
+                            return@FilterChip
+                        locating = !locating
+                        if (locating)
+                            kind = ExperimentKind.TAP
+                    },
+                    label = { Text("Find antinode") },
+                )
             }
         }
         Card(Modifier.fillMaxWidth()) {
@@ -211,7 +237,44 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
             }
         }
 
-        if (tapMode) {
+        if (tapMode && locating) {
+            Card(Modifier.weight(1f).fillMaxWidth()) {
+                val t = liveTaps
+                val summary = remember(t, marks.size) { LocateAnalysis.summarize(t?.taps ?: emptyList(), marks.toList()) }
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Find the antinode", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "Fix the phone anywhere on the panel but a node. Tap one spot three or more times, three seconds apart, press Next location, move, and repeat. The spot whose taps ring the mode hardest per unit impact is nearest the antinode.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        val here = summary.locations.getOrNull(marks.size)
+                        Text("Now at location ${marks.size + 1}" + (if (here != null && here.taps > 0) ", ${here.taps} clean tap${if (here.taps == 1) "" else "s"}" else ""), style = MaterialTheme.typography.bodyMedium)
+                        OutlinedButton(enabled = status.recording, onClick = { marks.add(recorder.currentTime()) }) { Text("Next location") }
+                    }
+                    Text(summary.note, style = MaterialTheme.typography.bodySmall)
+                    if (summary.ranked.isNotEmpty()) {
+                        Row(Modifier.fillMaxWidth()) {
+                            Text("Spot", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(0.3f))
+                            Text("Taps", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(0.15f))
+                            Text("Shape", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(0.25f))
+                            Text("Ring (m/s^2)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(0.3f))
+                        }
+                        for (s in summary.ranked) {
+                            Row(Modifier.fillMaxWidth()) {
+                                Text(s.label, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(0.3f))
+                                Text(s.taps.toString(), style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(0.15f))
+                                Text("%.2f".format(Locale.US, summary.shape(s)), style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(0.25f))
+                                Text("%.2f".format(Locale.US, s.meanAmplitude) + (if (s.seAmplitude.isFinite()) " +/- %.2f".format(Locale.US, s.seAmplitude) else ""), style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(0.3f))
+                            }
+                        }
+                    } else if (status.recording) {
+                        Text("Waiting for a tap above %.1f m/s^2...".format(Locale.US, settings.tapThreshold), style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+        } else if (tapMode) {
             Card(Modifier.weight(1f).fillMaxWidth()) {
                 val t = liveTaps
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -265,7 +328,7 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
                     if (run == null)
                         vm.message("Recording too short to keep")
                     else
-                        pending = run.copy(kind = kind)
+                        pending = finished(run)
                 } else if (!recorder.start()) {
                     vm.message("Could not start the accelerometer")
                 }
@@ -287,7 +350,7 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
         var name by remember {
             mutableStateOf(
                 if (sweep != null) "${sweep.name} ${datasets.count { it.sweepId == sweep.id } + 1}"
-                else (if (tapMode) "Tap " else "") + recorder.suggestedName()
+                else (if (run.locationMarks.isNotEmpty()) "Antinode " else if (tapMode) "Tap " else "") + recorder.suggestedName()
             )
         }
         var saving by remember { mutableStateOf(false) }

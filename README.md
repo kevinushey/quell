@@ -42,6 +42,10 @@ record directly from the phone's own accelerometer.
 - Tap-test recording mode: strike the structure, each ring-down is fitted for
   natural frequency and damping ratio on the spot; beating between two decay
   frequencies is flagged as a coupled absorber.
+- Antinode search: a tap-test mode that groups taps by location ("Next
+  location" between spots) and ranks the spots by how hard each tap sets the
+  mode ringing per unit impact, so the antinode of a panel mode can be found
+  with the phone fixed in one place.
 - Per-dataset analysis window (trim), experiment type (general, drive or tap) and
   damper mass.
 - Reference-band normalization to correct for differing road input between

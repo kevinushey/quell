@@ -95,6 +95,8 @@ data class DatasetMeta(
     /** Sweep this run belongs to, and its parameter value there (mass sweeps use damperMassGrams instead). */
     val sweepId: String? = null,
     val sweepValue: Double? = null,
+    /** Antinode search: recording times at which the tapping moved to the next location. */
+    val locationMarks: List<Double> = emptyList(),
 ) {
     val isTrimmed: Boolean get() = trimStart > 0.0 || (trimEnd > 0.0 && trimEnd < durationSec)
     val effectiveTrimEnd: Double get() = if (trimEnd > 0.0) minOf(trimEnd, durationSec) else durationSec

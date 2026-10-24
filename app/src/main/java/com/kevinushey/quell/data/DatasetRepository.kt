@@ -137,6 +137,7 @@ class DatasetRepository(private val context: Context) {
                     recordedAt = parsed.recordedAt,
                     extraFields = parsed.extraFields,
                     kind = parsed.kind,
+                    locationMarks = parsed.locationMarks,
                 )
             )
             // Persist first: a failed write must leave neither a phantom entry nor an orphan file.

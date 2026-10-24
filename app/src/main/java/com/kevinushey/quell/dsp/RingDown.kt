@@ -21,6 +21,10 @@ data class RingDownResult(
     val fitR2: Double,
     /** A second strong frequency in the decay (beating), NaN if none. An absorber coupled to the mode produces one. */
     val secondaryFreq: Double = Double.NaN,
+    /** Fitted envelope at the start of the decay window, m/s^2: how hard the mode was set ringing. */
+    val initialAmplitude: Double = Double.NaN,
+    /** Largest excursion during the contact transient, m/s^2: how hard the tap itself was. */
+    val impactPeak: Double = Double.NaN,
 ) {
     val hasBeating: Boolean get() = !secondaryFreq.isNaN()
 
@@ -70,6 +74,9 @@ object RingDown {
             return null
         val n = FFT.nextPowerOfTwo(count)
         val mean = signal.copyOfRange(from, from + count).average()
+        var impactPeak = 0.0
+        for (i in start..from)
+            impactPeak = maxOf(impactPeak, abs(signal[i] - mean))
         val re = DoubleArray(n) { if (it < count) signal[from + it] - mean else 0.0 }
         val im = DoubleArray(n)
         FFT.transform(re, im)
@@ -161,7 +168,7 @@ object RingDown {
         val envT = DoubleArray(picked.size) { xs[picked[it]] }
         val envA = DoubleArray(picked.size) { envelope[keep[picked[it]]] }
         val fit = DoubleArray(picked.size) { exp(intercept + slope * xs[picked[it]]) }
-        return RingDownResult(fn, zeta, start / sampleRate, envT, envA, fit, r2, secondary)
+        return RingDownResult(fn, zeta, start / sampleRate, envT, envA, fit, r2, secondary, exp(intercept), impactPeak)
     }
 
     /** Longest-variance axis of a 3-axis recording; the tap excites that one most. */

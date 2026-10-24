@@ -169,6 +169,9 @@ class Recorder(context: Context) : SensorEventListener {
         private const val MAX_PREVIEW_GAP_SEC = 1.0
     }
 
+    /** Recording time of the latest sample, for marks placed while recording. */
+    fun currentTime(): Double = if (count > 0) times[count - 1] else 0.0
+
     /** Everything captured so far. */
     fun snapshot(): TimeSeries? = snapshotSince(0.0)
 
