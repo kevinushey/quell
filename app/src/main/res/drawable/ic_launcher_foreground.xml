@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Original resonance, before the damper. -->
+    <path
+        android:pathData="M24,76 C40,76 48,72 52,34 C54,22 54,22 56,34 C60,72 68,76 84,76"
+        android:strokeWidth="3.5"
+        android:strokeColor="#80FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000" />
+    <!-- Same resonance after tuning: lower, split in two. -->
+    <path
+        android:pathData="M24,76 C36,76 40,74 44,58 C46,50 48,50 50,58 C52,64 56,64 58,58 C60,50 62,50 64,58 C68,74 72,76 84,76"
+        android:strokeWidth="6"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000" />
+</vector>

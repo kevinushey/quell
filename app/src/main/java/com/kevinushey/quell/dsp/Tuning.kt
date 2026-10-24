@@ -1,0 +1,120 @@
+package com.kevinushey.quell.dsp
+
+import kotlin.math.abs
+import kotlin.math.log10
+import kotlin.math.pow
+import kotlin.math.sqrt
+
+enum class DampingVerdict(val label: String) {
+    UNDER_DAMPED("Under-damped absorber"),
+    OVER_DAMPED("Over-damped absorber"),
+    NO_EFFECT("No measurable effect"),
+    DETUNED_LOW("Absorber tuned too low"),
+    DETUNED_HIGH("Absorber tuned too high"),
+    NEAR_OPTIMAL("Near optimal"),
+    INCONCLUSIVE("Inconclusive"),
+}
+
+/**
+ * Den Hartog comparison of a damped run against its baseline. All "optimal"
+ * numbers assume a single structural mode with a classic tuned absorber under
+ * broadband excitation; use them as guidance, not gospel.
+ */
+data class TuningDiagnosis(
+    val massRatio: Double,
+    val optimalTuningRatio: Double,
+    val optimalDampingRatio: Double,
+    /** Best achievable drop of the PSD peak versus baseline, dB (negative = lower). */
+    val optimalReductionDb: Double,
+    /** Measured drop of the tallest in-band PSD peak versus baseline, dB. */
+    val achievedReductionDb: Double,
+    /** 10 log10 of lower-peak power over upper-peak power; 0 means balanced. */
+    val peakBalanceDb: Double,
+    /** Depth of the notch below the lower of the two side peaks, dB. */
+    val notchDepthDb: Double,
+    val verdict: DampingVerdict,
+    val advice: String,
+)
+
+object Tuning {
+
+    /** Den Hartog optimal tuning ratio f_absorber / f_structure. */
+    fun optimalTuningRatio(mu: Double): Double = 1.0 / (1.0 + mu)
+
+    /** Den Hartog optimal absorber damping ratio. */
+    fun optimalDampingRatio(mu: Double): Double = sqrt(3 * mu / (8 * (1 + mu).pow(3)))
+
+    /**
+     * Optimal peak reduction in dB. Baseline magnification is 1/(2 zeta_s);
+     * the optimally damped absorber limits it to sqrt(1 + 2/mu).
+     */
+    fun optimalReductionDb(mu: Double, structureDamping: Double): Double {
+        if (mu <= 0 || structureDamping <= 0)
+            return Double.NaN
+        val baseline = 1 / (2 * structureDamping)
+        val best = sqrt(1 + 2 / mu)
+        return 20 * log10(best / baseline)
+    }
+
+    fun diagnose(baselinePeak: ModalPeak, dampedSpectrum: Spectrum, lo: Double, hi: Double, split: SplitPeak?): TuningDiagnosis? {
+        val dampedPeak = Modal.dominantPeak(dampedSpectrum, lo, hi) ?: return null
+        val achieved = 10 * log10(dampedPeak.power / baselinePeak.power)
+        val zetaS = baselinePeak.dampingRatio
+
+        if (split == null) {
+            // One peak: either the absorber is so damped it rides with the structure, or it is barely coupled.
+            val broadened = !dampedPeak.dampingRatio.isNaN() && !zetaS.isNaN() && dampedPeak.dampingRatio > 1.5 * zetaS
+            val verdict = when {
+                achieved > -1 -> DampingVerdict.NO_EFFECT
+                broadened -> DampingVerdict.OVER_DAMPED
+                achieved < -3 -> DampingVerdict.NEAR_OPTIMAL
+                else -> DampingVerdict.INCONCLUSIVE
+            }
+            val advice = when {
+                achieved > -1 -> "No split and no level drop: the absorber is not coupling to this mode. Check mounting stiffness and that its own frequency is near %.1f Hz.".format(baselinePeak.freq)
+                broadened -> "Single broadened peak %.1f dB lower: the absorber adds damping but is too lossy to create the anti-resonance. Reduce absorber damping (stiffer, less lossy mount) to open a notch.".format(-achieved)
+                achieved < -3 -> "Single peak lowered by %.1f dB without a visible split; the mass ratio may be too small to resolve. Try more mass to see whether a notch opens.".format(-achieved)
+                else -> "Peak moved by %.1f dB, within run-to-run scatter. Repeat the baseline to establish the noise floor before reading anything into this.".format(achieved)
+            }
+            return TuningDiagnosis(Double.NaN, Double.NaN, Double.NaN, Double.NaN, achieved, Double.NaN, Double.NaN, verdict, advice)
+        }
+
+        val mu = split.impliedMassRatio.coerceAtLeast(1e-4)
+        val optRatio = optimalTuningRatio(mu)
+        val optZeta = optimalDampingRatio(mu)
+        val optDb = optimalReductionDb(mu, zetaS)
+        val balance = 10 * log10(split.lower.power / split.upper.power)
+        val notch = 10 * log10(minOf(split.lower.power, split.upper.power) / split.notchPower)
+        val shortfall = if (optDb.isNaN()) Double.NaN else achieved - optDb
+
+        val verdict: DampingVerdict
+        val advice: String
+        when {
+            abs(balance) > 4 && balance < 0 -> {
+                verdict = DampingVerdict.DETUNED_LOW
+                advice = "Upper peak is %.1f dB taller than the lower one: the absorber frequency sits below optimal. Remove a little mass or stiffen its spring.".format(-balance)
+            }
+            abs(balance) > 4 -> {
+                verdict = DampingVerdict.DETUNED_HIGH
+                advice = "Lower peak is %.1f dB taller than the upper one: the absorber frequency sits above optimal. Add a little mass or soften its spring.".format(balance)
+            }
+            notch > 10 && (shortfall.isNaN() || shortfall > 3) -> {
+                verdict = DampingVerdict.UNDER_DAMPED
+                advice = "Deep %.0f dB notch with tall side peaks: the absorber needs more damping. Target zeta about %.3f (a lossier mount or rubber element).".format(notch, optZeta)
+            }
+            notch < 3 && !shortfall.isNaN() && shortfall > 3 -> {
+                verdict = DampingVerdict.OVER_DAMPED
+                advice = "Shallow notch and side peaks %.1f dB above the optimum: the absorber is over-damped. Use a stiffer or less lossy mount; target zeta about %.3f.".format(shortfall, optZeta)
+            }
+            shortfall.isNaN() || shortfall <= 3 -> {
+                verdict = DampingVerdict.NEAR_OPTIMAL
+                advice = "Balanced peaks within %.1f dB of the Den Hartog optimum for mass ratio %.3f.".format(if (shortfall.isNaN()) 0.0 else shortfall, mu)
+            }
+            else -> {
+                verdict = DampingVerdict.INCONCLUSIVE
+                advice = "Peaks are balanced but %.1f dB short of optimum; damping is off in one direction. Compare notch depth across runs to see which.".format(shortfall)
+            }
+        }
+        return TuningDiagnosis(mu, optRatio, optZeta, optDb, achieved, balance, notch, verdict, advice)
+    }
+}
