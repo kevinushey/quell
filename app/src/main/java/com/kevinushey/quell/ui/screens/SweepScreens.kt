@@ -520,7 +520,8 @@ private fun SweepTableRow(
 
 @Composable
 private fun ValueDialog(sweep: Sweep, current: Double?, onDismiss: () -> Unit, onConfirm: (Double?) -> Unit) {
-    var text by remember { mutableStateOf(current?.let { sweep.parameter.formatNumber(it) } ?: "") }
+    val initial = remember { current?.let { sweep.parameter.formatNumber(it) } ?: "" }
+    var text by remember { mutableStateOf(initial) }
     val parsed = parseDecimal(text)?.takeIf { it.isFinite() }
     val valid = text.isBlank() || parsed != null
     AlertDialog(
@@ -537,7 +538,8 @@ private fun ValueDialog(sweep: Sweep, current: Double?, onDismiss: () -> Unit, o
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
             )
         },
-        confirmButton = { TextButton(enabled = valid, onClick = { onConfirm(parsed) }) { Text("Save") } },
+        // Untouched text keeps the stored value, which the field shows rounded to two decimals.
+        confirmButton = { TextButton(enabled = valid, onClick = { onConfirm(if (text == initial) current else parsed) }) { Text("Save") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }

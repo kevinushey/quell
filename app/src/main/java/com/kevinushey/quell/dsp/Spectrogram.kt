@@ -10,7 +10,11 @@ class SpectrogramData(
     val maxDb: Double,
     /** Seconds between consecutive frame centres (one frame's length when there is a single frame). */
     val frameSpacing: Double = 0.0,
-)
+) {
+    /** The same frames with their times moved [offset] seconds later, e.g. from a trimmed window into recording time. */
+    fun shifted(offset: Double): SpectrogramData =
+        if (offset == 0.0) this else SpectrogramData(DoubleArray(times.size) { times[it] + offset }, freq, db, minDb, maxDb, frameSpacing)
+}
 
 object Spectrogram {
 

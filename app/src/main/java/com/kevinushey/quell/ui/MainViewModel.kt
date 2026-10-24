@@ -413,7 +413,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return null
         }
         val s = repo.series(meta.id) ?: return null
-        val r = analyzeOrReport(meta) { Resampled.from(s.slice(meta.trimStart, meta.effectiveTrimEnd)) }
+        val r = analyzeOrReport(meta) {
+            val slice = s.slice(meta.trimStart, meta.effectiveTrimEnd)
+            Resampled.from(slice, startTime = slice.time.firstOrNull()?.minus(s.time.first()) ?: 0.0)
+        }
         cacheMutex.withLock {
             resampledCache.removeIf { it.id == meta.id && it != key }
             failedResamples.removeAll { it.id == meta.id }

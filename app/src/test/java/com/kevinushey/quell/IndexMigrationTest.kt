@@ -27,4 +27,14 @@ class IndexMigrationTest {
         val back = DatasetRepository.indexJson.decodeFromString<List<DatasetMeta>>(DatasetRepository.migrateIndex(text))
         assertEquals(ExperimentKind.GENERAL, back[0].kind)
     }
+
+    @Test
+    fun restoredRunsGetTheirOwnColourAndName() {
+        fun meta(id: String, name: String, color: Int) = DatasetMeta(id, name, "$id.csv", 0, 10, 400.0, 1.0, color)
+        val here = listOf(meta("a", "Baseline", 0), meta("b", "Run", 1))
+        // The other phone's runs start at colour 0 too, and one shares a name; colour 5 is free and kept.
+        val placed = DatasetRepository.placeAdopted(here, listOf(meta("x", "Baseline", 0), meta("y", "Mass 30 g", 1), meta("z", "Taps", 5)))
+        assertEquals(listOf("Baseline (2)", "Mass 30 g", "Taps"), placed.map { it.name })
+        assertEquals(listOf(2, 3, 5), placed.map { it.colorIndex })
+    }
 }

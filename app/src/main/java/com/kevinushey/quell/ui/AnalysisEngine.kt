@@ -13,8 +13,19 @@ import com.kevinushey.quell.dsp.Spectrum
 import com.kevinushey.quell.dsp.Welch
 import com.kevinushey.quell.dsp.WindowType
 
-/** Uniformly resampled copy of a dataset, computed once per dataset. */
-class Resampled(val sampleRate: Double, val x: DoubleArray, val y: DoubleArray, val z: DoubleArray, val magnitude: DoubleArray) {
+/**
+ * Uniformly resampled copy of a dataset, computed once per dataset.
+ * [startTime] is where its first sample sits in the recording, in seconds:
+ * nonzero for a trimmed window, so time axes can match the waveform.
+ */
+class Resampled(
+    val sampleRate: Double,
+    val x: DoubleArray,
+    val y: DoubleArray,
+    val z: DoubleArray,
+    val magnitude: DoubleArray,
+    val startTime: Double = 0.0,
+) {
     val size: Int get() = x.size
 
     fun channel(c: Channel): DoubleArray = when (c) {
@@ -25,7 +36,7 @@ class Resampled(val sampleRate: Double, val x: DoubleArray, val y: DoubleArray, 
     }
 
     companion object {
-        fun from(s: TimeSeries): Resampled {
+        fun from(s: TimeSeries, startTime: Double = 0.0): Resampled {
             val fs = Resampler.estimateSampleRate(s.time)
             // A trim window can span a gap the import never had to resample; refuse before allocating.
             val length = Resampler.resampledLength(s.time, fs)
@@ -53,7 +64,7 @@ class Resampled(val sampleRate: Double, val x: DoubleArray, val y: DoubleArray, 
             val y = Resampler.resample(s.time, s.y, fs)
             val z = Resampler.resample(s.time, s.z, fs)
             val m = DoubleArray(x.size) { Math.sqrt(x[it] * x[it] + y[it] * y[it] + z[it] * z[it]) }
-            return Resampled(fs, x, y, z, m)
+            return Resampled(fs, x, y, z, m, startTime)
         }
     }
 }

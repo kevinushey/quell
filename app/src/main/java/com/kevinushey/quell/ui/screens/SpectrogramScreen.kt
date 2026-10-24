@@ -74,10 +74,12 @@ fun SpectrogramScreen(vm: MainViewModel, exportHost: ChartExportHost) {
             withContext(Dispatchers.Default) {
                 // Shorter segments than the PSD view: time resolution matters more here.
                 val seg = (settings.segmentSize / 2).coerceAtLeast(256)
-                if (settings.channel == Channel.TOTAL)
+                val d = if (settings.channel == Channel.TOTAL)
                     Spectrogram.computeTotal(r.x, r.y, r.z, r.sampleRate, seg, settings.window)
                 else
                     Spectrogram.compute(r.channel(settings.channel), r.sampleRate, seg, settings.window)
+                // Recording time, as on the waveform and in the trim dialog, not time since the trim start.
+                d.shifted(r.startTime)
             }
         }
     }

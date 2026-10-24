@@ -391,7 +391,8 @@ private fun DetailLine(label: String, value: String) {
 
 @Composable
 private fun MassDialog(meta: DatasetMeta, onDismiss: () -> Unit, onConfirm: (Double?) -> Unit) {
-    var text by remember { mutableStateOf(meta.damperMassGrams?.let { "%.1f".format(java.util.Locale.US, it) } ?: "") }
+    val initial = remember { meta.damperMassGrams?.let { com.kevinushey.quell.data.SweepParameter.MASS.formatNumber(it) } ?: "" }
+    var text by remember { mutableStateOf(initial) }
     // Empty clears the mass; anything else must parse, so a typo cannot silently clear it.
     val parsed = com.kevinushey.quell.ui.components.parseDecimal(text)?.takeIf { it.isFinite() }
     val valid = text.isBlank() || parsed != null
@@ -412,7 +413,8 @@ private fun MassDialog(meta: DatasetMeta, onDismiss: () -> Unit, onConfirm: (Dou
                 )
             }
         },
-        confirmButton = { TextButton(enabled = valid, onClick = { onConfirm(parsed) }) { Text("Save") } },
+        // Untouched text keeps the stored value: the field shows it rounded, and a sweep pools runs by exact value.
+        confirmButton = { TextButton(enabled = valid, onClick = { onConfirm(if (text == initial) meta.damperMassGrams else parsed) }) { Text("Save") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }

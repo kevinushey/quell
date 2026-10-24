@@ -107,7 +107,8 @@ object Tuning {
                 verdict = DampingVerdict.UNDER_DAMPED
                 advice = "Deep %.0f dB notch with tall side peaks: the absorber needs more damping. Target zeta about %.3f (a lossier mount or rubber element).".format(java.util.Locale.US, notch, optZeta)
             }
-            notch < 3 && !shortfall.isNaN() && shortfall > 3 -> {
+            // Modal.splitPeak already refuses notches under 3 dB, so "shallow" has to reach above that to ever fire.
+            notch < 6 && !shortfall.isNaN() && shortfall > 3 -> {
                 verdict = DampingVerdict.OVER_DAMPED
                 advice = "Shallow notch and side peaks %.1f dB above the optimum: the absorber is over-damped. Use a stiffer or less lossy mount; target zeta about %.3f.".format(java.util.Locale.US, shortfall, optZeta)
             }

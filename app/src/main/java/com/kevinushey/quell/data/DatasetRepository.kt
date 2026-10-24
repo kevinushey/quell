@@ -154,13 +154,13 @@ class DatasetRepository(private val context: Context) {
             val meta = configure(
                 DatasetMeta(
                     id = id,
-                    name = uniqueName(name),
+                    name = uniqueName(name, _datasets.value),
                     sourceName = sourceName,
                     importedAtEpochMs = System.currentTimeMillis(),
                     sampleCount = series.size,
                     sampleRate = Resampler.estimateSampleRate(series.time),
                     durationSec = series.duration,
-                    colorIndex = nextColorIndex(),
+                    colorIndex = nextColorIndex(_datasets.value),
                     deviceModel = parsed.deviceModel,
                     sensorName = parsed.sensorName,
                     recordedAt = parsed.recordedAt,
@@ -214,7 +214,7 @@ class DatasetRepository(private val context: Context) {
         mutex.withLock {
             loadLocked()
             val have = _datasets.value.map { it.id }.toSet()
-            val incoming = metas.filter { it.id !in have && File(dir, "${it.id}.bin").exists() }
+            val incoming = placeAdopted(_datasets.value, metas.filter { it.id !in have && File(dir, "${it.id}.bin").exists() })
             val haveSweeps = _sweeps.value.map { it.id }.toSet()
             val newSweeps = sweeps.filter { it.id !in haveSweeps }
             if (incoming.isEmpty() && newSweeps.isEmpty())
@@ -370,21 +370,6 @@ class DatasetRepository(private val context: Context) {
         }
     }
 
-    private fun nextColorIndex(): Int {
-        val used = _datasets.value.map { it.colorIndex }.toSet()
-        return (0 until 64).firstOrNull { it !in used } ?: _datasets.value.size
-    }
-
-    private fun uniqueName(base: String): String {
-        val names = _datasets.value.map { it.name }.toSet()
-        if (base !in names)
-            return base
-        var i = 2
-        while ("$base ($i)" in names)
-            i++
-        return "$base ($i)"
-    }
-
     private fun displayName(uri: Uri): String {
         context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
             if (c.moveToFirst()) {
@@ -399,6 +384,36 @@ class DatasetRepository(private val context: Context) {
     companion object {
         // Defaults are written out so a future change of default cannot silently re-tag old entries.
         internal val indexJson = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
+
+        private fun nextColorIndex(existing: List<DatasetMeta>): Int {
+            val used = existing.map { it.colorIndex }.toSet()
+            return (0 until 64).firstOrNull { it !in used } ?: existing.size
+        }
+
+        private fun uniqueName(base: String, existing: List<DatasetMeta>): String {
+            val names = existing.map { it.name }.toSet()
+            if (base !in names)
+                return base
+            var i = 2
+            while ("$base ($i)" in names)
+                i++
+            return "$base ($i)"
+        }
+
+        /**
+         * Runs restored from another phone keep their colour and name unless
+         * this phone (or an earlier run of the same restore) already uses
+         * them; otherwise two curves would be indistinguishable.
+         */
+        internal fun placeAdopted(existing: List<DatasetMeta>, incoming: List<DatasetMeta>): List<DatasetMeta> {
+            val placed = ArrayList<DatasetMeta>(incoming.size)
+            for (meta in incoming) {
+                val taken = existing + placed
+                val color = if (taken.any { it.colorIndex == meta.colorIndex }) nextColorIndex(taken) else meta.colorIndex
+                placed.add(meta.copy(name = uniqueName(meta.name, taken), colorIndex = color))
+            }
+            return placed
+        }
 
         /**
          * Early indexes omitted default fields, and the default kind was DRIVE
