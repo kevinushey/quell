@@ -36,7 +36,19 @@ class SyncPlan(
     val filesToDelete: List<String> get() = deletions.values.flatten()
     val isEmpty: Boolean get() = binsToWrite.isEmpty() && csvToWrite.isEmpty() && deletions.isEmpty() && !writeIndex && !writeSweeps
 
+    /** What to do with a folder file that reads but does not decode. */
+    enum class DamagedFile { ABORT_AND_REMEMBER, SET_ASIDE }
+
     companion object {
+        /**
+         * A damaged index or sweep list is set aside only when the very same
+         * bytes were already seen damaged on the previous pass: a neighbour's
+         * write in progress is not damage. The first sighting aborts the pass
+         * and the caller must remember the fingerprint before aborting.
+         */
+        fun damagedFileAction(previousBadHash: String?, currentBadHash: String): DamagedFile =
+            if (previousBadHash == currentBadHash) DamagedFile.SET_ASIDE else DamagedFile.ABORT_AND_REMEMBER
+
         /**
          * The folder's index is a union: this phone's entries, then every entry
          * the folder already listed that is neither here nor deleted here. An

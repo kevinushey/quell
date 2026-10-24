@@ -201,7 +201,7 @@ fun DamperScreen(vm: MainViewModel, exportHost: ChartExportHost, onOpenSweeps: (
                     }
                 }
                 // Diagnoses need both runs on the same scale and covering the band (bandRms is NaN otherwise).
-                if (driveRef != null && driveRef.peak != null && !driveRef.bandRms.isNaN() && rows.size > 1) {
+                if (driveRef != null && driveRef.peak != null && driveRef.peak.power > 0 && !driveRef.bandRms.isNaN() && rows.size > 1) {
                     item { SectionTitle("Tuning diagnosis vs ${driveRef.result.meta.name}") }
                     for (r in rows) {
                         if (r.result.meta.id == driveRef.result.meta.id || r.bandRms.isNaN())

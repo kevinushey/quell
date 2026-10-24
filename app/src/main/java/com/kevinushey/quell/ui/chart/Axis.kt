@@ -66,7 +66,7 @@ object Axis {
             return "0"
         val a = abs(v)
         if (a >= 1e5 || a < 1e-3)
-            return "%.1e".format(v)
+            return "%.1e".format(java.util.Locale.US, v)
 
         val decimals = when {
             step >= 1 -> 0
@@ -74,7 +74,7 @@ object Axis {
             step >= 0.01 -> 2
             else -> 3
         }
-        return if (decimals == 0) v.roundToInt().toString() else "%.${decimals}f".format(v)
+        return if (decimals == 0) v.roundToInt().toString() else "%.${decimals}f".format(java.util.Locale.US, v)
     }
 
     fun formatValue(v: Double): String {
@@ -83,10 +83,10 @@ object Axis {
         val a = abs(v)
         return when {
             a == 0.0 -> "0"
-            a >= 1e4 || a < 1e-3 -> "%.2e".format(v)
-            a >= 100 -> "%.1f".format(v)
-            a >= 1 -> "%.2f".format(v)
-            else -> "%.3f".format(v)
+            a >= 1e4 || a < 1e-3 -> "%.2e".format(java.util.Locale.US, v)
+            a >= 100 -> "%.1f".format(java.util.Locale.US, v)
+            a >= 1 -> "%.2f".format(java.util.Locale.US, v)
+            else -> "%.3f".format(java.util.Locale.US, v)
         }
     }
 }

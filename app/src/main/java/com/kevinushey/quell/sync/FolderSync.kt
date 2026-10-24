@@ -165,18 +165,12 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         // write in progress is not mistaken for damage); until then the pass stops before writing anything.
         val index = readRemoteIndex(remote)
         val sweepsRead = readRemoteSweeps(remote)
-        var badIndexHash: String? = null
-        var badSweepsHash: String? = null
-        val remoteIndex: List<DatasetMeta> = index.items ?: run {
-            badIndexHash = index.badHash
-            if (state.badIndexHash == index.badHash && setAside(remote, "index.json")) emptyList()
-            else throw IllegalStateException("The folder's index.json is damaged (not valid JSON); nothing was written. It is set aside on the next pass.")
-        }
-        val remoteSweeps: List<Sweep> = sweepsRead.items ?: run {
-            badSweepsHash = sweepsRead.badHash
-            if (state.badSweepsHash == sweepsRead.badHash && setAside(remote, "sweeps.json")) emptyList()
-            else throw IllegalStateException("The folder's sweeps.json is damaged (not valid JSON); nothing was written. It is set aside on the next pass.")
-        }
+        // The fingerprints of what would not decode are saved before any abort, so the next pass can act on them.
+        val seen = state.copy(badIndexHash = index.badHash, badSweepsHash = sweepsRead.badHash)
+        if (seen != state)
+            saveState(seen)
+        val remoteIndex: List<DatasetMeta> = index.items ?: damagedOrAside(remote, "index.json", state.badIndexHash, index.badHash!!)
+        val remoteSweeps: List<Sweep> = sweepsRead.items ?: damagedOrAside(remote, "sweeps.json", state.badSweepsHash, sweepsRead.badHash!!)
         val mergedIndex = SyncPlan.mergeIndex(metas, remoteIndex, deleted)
         val mergedSweeps = SyncPlan.mergeSweeps(repo.sweeps.value, remoteSweeps, deleted)
         val indexBytes = DatasetRepository.indexJson.encodeToString(mergedIndex).toByteArray(Charsets.UTF_8)
@@ -259,8 +253,8 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                 csvNames,
                 if (indexWriteSafe) indexHash else state.indexHash,
                 if (indexWriteSafe) sweepsHash else state.sweepsHash,
-                badIndexHash,
-                badSweepsHash,
+                badIndexHash = null,
+                badSweepsHash = null,
             )
         )
         if (settled.isNotEmpty())
@@ -268,6 +262,19 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         if (!indexWriteSafe)
             throw IllegalStateException("The folder's index lists datasets this pass cannot account for; files were mirrored but the index was left alone")
         return MirrorOutcome(metas.count { it.id in mirrored }, plan.notOnThisPhone.size)
+    }
+
+    /** A damaged folder file: set aside on its second sighting (then treated as absent), otherwise the pass stops here. */
+    private fun <T> damagedOrAside(remote: MutableMap<String, Child>, name: String, previousBadHash: String?, badHash: String): List<T> {
+        when (SyncPlan.damagedFileAction(previousBadHash, badHash)) {
+            SyncPlan.DamagedFile.ABORT_AND_REMEMBER ->
+                throw IllegalStateException("The folder's $name is damaged (not valid JSON); nothing was written. If it is still damaged on the next pass it will be set aside as ${name.replace(".json", ".broken-*.json")}.")
+            SyncPlan.DamagedFile.SET_ASIDE -> {
+                if (!setAside(remote, name))
+                    throw IllegalStateException("The folder's $name is damaged and this folder does not allow renaming it; remove or fix $name by hand.")
+                return emptyList()
+            }
+        }
     }
 
     /** Renames a damaged folder file out of the way, as the local store does with its own index. */
@@ -343,7 +350,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             if ("index.json" !in remote)
                 throw IllegalStateException("No index.json in that folder")
             val metas = readRemoteIndex(remote).items
-                ?: throw IllegalStateException("The folder's index.json is damaged (not valid JSON). Mirroring sets it aside; the datasets' files are still in the folder.")
+                ?: throw IllegalStateException("The folder's index.json is damaged (not valid JSON). The datasets' files are still in the folder; with mirroring on, the file is set aside after two passes, or fix it by hand.")
             // A damaged sweep list must not stand between the user and their datasets.
             val sweepsRead = readRemoteSweeps(remote)
             val sweeps = sweepsRead.items ?: emptyList()

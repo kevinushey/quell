@@ -214,6 +214,16 @@ class TuningTest {
     }
 
     @Test
+    fun diagnosisAgainstASilentBaselineIsNull() {
+        val freq = DoubleArray(101) { it * 0.5 }
+        val silent = com.kevinushey.quell.dsp.Spectrum(freq, DoubleArray(freq.size))
+        val loud = com.kevinushey.quell.dsp.Spectrum(freq, DoubleArray(freq.size) { 1e-3 })
+        val silentPeak = com.kevinushey.quell.dsp.Modal.dominantPeak(silent, 20.0, 30.0)!!
+        org.junit.Assert.assertNull(com.kevinushey.quell.dsp.Tuning.diagnose(silentPeak, loud, 20.0, 30.0, null))
+        org.junit.Assert.assertNull(com.kevinushey.quell.dsp.Tuning.diagnose(silentPeak, silent, 20.0, 30.0, null))
+    }
+
+    @Test
     fun diagnosisWithoutBaselineDampingIsInconclusive() {
         val df = 0.1
         val n = (60 / df).toInt()

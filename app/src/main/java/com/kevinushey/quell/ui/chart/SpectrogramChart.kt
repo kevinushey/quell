@@ -91,8 +91,8 @@ fun SpectrogramChart(
             val y0 = rect.top + rect.height * i / steps
             drawRect(viridis(frac), topLeft = Offset(barLeft, y0), size = Size(barW, rect.height / steps + 1f))
         }
-        val top = textMeasurer.measure("%.0f".format(data.maxDb), labelStyle)
-        val bottom = textMeasurer.measure("%.0f".format(data.maxDb - dynamicRangeDb), labelStyle)
+        val top = textMeasurer.measure("%.0f".format(java.util.Locale.US, data.maxDb), labelStyle)
+        val bottom = textMeasurer.measure("%.0f".format(java.util.Locale.US, data.maxDb - dynamicRangeDb), labelStyle)
         drawText(top, topLeft = Offset(barLeft + barW + 2.dp.toPx(), rect.top))
         drawText(bottom, topLeft = Offset(barLeft + barW + 2.dp.toPx(), rect.bottom - bottom.size.height))
 

@@ -152,6 +152,13 @@ class SyncPlanTest {
     }
 
     @Test
+    fun aDamagedFolderFileIsSetAsideOnlyOnItsSecondSighting() {
+        assertEquals(SyncPlan.DamagedFile.ABORT_AND_REMEMBER, SyncPlan.damagedFileAction(null, "deadbeef"))
+        assertEquals(SyncPlan.DamagedFile.ABORT_AND_REMEMBER, SyncPlan.damagedFileAction("other", "deadbeef"))
+        assertEquals(SyncPlan.DamagedFile.SET_ASIDE, SyncPlan.damagedFileAction("deadbeef", "deadbeef"))
+    }
+
+    @Test
     fun csvCopiesFollowTheToggle() {
         val r = remote("a.bin", "a-run.csv", "index.json", "sweeps.json")
         val state = SyncState(mirrored = setOf("a"), csvNames = mapOf("a" to "a-run.csv"), indexHash = "i1", sweepsHash = "s1")

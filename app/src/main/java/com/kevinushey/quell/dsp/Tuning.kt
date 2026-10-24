@@ -58,7 +58,12 @@ object Tuning {
 
     fun diagnose(baselinePeak: ModalPeak, dampedSpectrum: Spectrum, lo: Double, hi: Double, split: SplitPeak?): TuningDiagnosis? {
         val dampedPeak = Modal.dominantPeak(dampedSpectrum, lo, hi) ?: return null
+        // A silent band (all-zero PSD) has no level to compare; a ratio of zeros is not a diagnosis.
+        if (!(baselinePeak.power > 0) || !(dampedPeak.power > 0))
+            return null
         val achieved = 10 * log10(dampedPeak.power / baselinePeak.power)
+        if (!achieved.isFinite())
+            return null
         val zetaS = baselinePeak.dampingRatio
 
         if (split == null) {
@@ -71,10 +76,10 @@ object Tuning {
                 else -> DampingVerdict.INCONCLUSIVE
             }
             val advice = when {
-                achieved > -1 -> "No split and no level drop: the absorber is not coupling to this mode. Check mounting stiffness and that its own frequency is near %.1f Hz.".format(baselinePeak.freq)
-                broadened -> "Single broadened peak %.1f dB lower: the absorber adds damping but is too lossy to create the anti-resonance. Reduce absorber damping (stiffer, less lossy mount) to open a notch.".format(-achieved)
-                achieved < -3 -> "Single peak lowered by %.1f dB without a visible split; the mass ratio may be too small to resolve. Try more mass to see whether a notch opens.".format(-achieved)
-                else -> "Peak moved by %.1f dB, within run-to-run scatter. Repeat the baseline to establish the noise floor before reading anything into this.".format(achieved)
+                achieved > -1 -> "No split and no level drop: the absorber is not coupling to this mode. Check mounting stiffness and that its own frequency is near %.1f Hz.".format(java.util.Locale.US, baselinePeak.freq)
+                broadened -> "Single broadened peak %.1f dB lower: the absorber adds damping but is too lossy to create the anti-resonance. Reduce absorber damping (stiffer, less lossy mount) to open a notch.".format(java.util.Locale.US, -achieved)
+                achieved < -3 -> "Single peak lowered by %.1f dB without a visible split; the mass ratio may be too small to resolve. Try more mass to see whether a notch opens.".format(java.util.Locale.US, -achieved)
+                else -> "Peak moved by %.1f dB, within run-to-run scatter. Repeat the baseline to establish the noise floor before reading anything into this.".format(java.util.Locale.US, achieved)
             }
             return TuningDiagnosis(Double.NaN, Double.NaN, Double.NaN, Double.NaN, achieved, Double.NaN, Double.NaN, verdict, advice)
         }
@@ -92,36 +97,36 @@ object Tuning {
         when {
             abs(balance) > 4 && balance < 0 -> {
                 verdict = DampingVerdict.DETUNED_LOW
-                advice = "Upper peak is %.1f dB taller than the lower one: the absorber frequency sits below optimal. Remove a little mass or stiffen its spring.".format(-balance)
+                advice = "Upper peak is %.1f dB taller than the lower one: the absorber frequency sits below optimal. Remove a little mass or stiffen its spring.".format(java.util.Locale.US, -balance)
             }
             abs(balance) > 4 -> {
                 verdict = DampingVerdict.DETUNED_HIGH
-                advice = "Lower peak is %.1f dB taller than the upper one: the absorber frequency sits above optimal. Add a little mass or soften its spring.".format(balance)
+                advice = "Lower peak is %.1f dB taller than the upper one: the absorber frequency sits above optimal. Add a little mass or soften its spring.".format(java.util.Locale.US, balance)
             }
             notch > 10 && (shortfall.isNaN() || shortfall > 3) -> {
                 verdict = DampingVerdict.UNDER_DAMPED
-                advice = "Deep %.0f dB notch with tall side peaks: the absorber needs more damping. Target zeta about %.3f (a lossier mount or rubber element).".format(notch, optZeta)
+                advice = "Deep %.0f dB notch with tall side peaks: the absorber needs more damping. Target zeta about %.3f (a lossier mount or rubber element).".format(java.util.Locale.US, notch, optZeta)
             }
             notch < 3 && !shortfall.isNaN() && shortfall > 3 -> {
                 verdict = DampingVerdict.OVER_DAMPED
-                advice = "Shallow notch and side peaks %.1f dB above the optimum: the absorber is over-damped. Use a stiffer or less lossy mount; target zeta about %.3f.".format(shortfall, optZeta)
+                advice = "Shallow notch and side peaks %.1f dB above the optimum: the absorber is over-damped. Use a stiffer or less lossy mount; target zeta about %.3f.".format(java.util.Locale.US, shortfall, optZeta)
             }
             achieved >= 0 -> {
                 verdict = DampingVerdict.INCONCLUSIVE
-                advice = "Peaks are split but the tallest in-band peak is %.1f dB above baseline. Check that both runs cover the same mode and road input before tuning further.".format(achieved)
+                advice = "Peaks are split but the tallest in-band peak is %.1f dB above baseline. Check that both runs cover the same mode and road input before tuning further.".format(java.util.Locale.US, achieved)
             }
             shortfall.isNaN() -> {
                 // Without the baseline's half-power bandwidth inside the band there is no optimum to compare against.
                 verdict = DampingVerdict.INCONCLUSIVE
-                advice = "Balanced peaks with a %.0f dB notch, but the baseline's damping could not be estimated inside the target band, so the optimum is unknown. Widen the band to include the baseline peak's half-power points.".format(notch)
+                advice = "Balanced peaks with a %.0f dB notch, but the baseline's damping could not be estimated inside the target band, so the optimum is unknown. Widen the band to include the baseline peak's half-power points.".format(java.util.Locale.US, notch)
             }
             shortfall <= 3 -> {
                 verdict = DampingVerdict.NEAR_OPTIMAL
-                advice = "Balanced peaks within %.1f dB of the Den Hartog optimum for mass ratio %.3f.".format(shortfall, mu)
+                advice = "Balanced peaks within %.1f dB of the Den Hartog optimum for mass ratio %.3f.".format(java.util.Locale.US, shortfall, mu)
             }
             else -> {
                 verdict = DampingVerdict.INCONCLUSIVE
-                advice = "Peaks are balanced but %.1f dB short of optimum; damping is off in one direction. Compare notch depth across runs to see which.".format(shortfall)
+                advice = "Peaks are balanced but %.1f dB short of optimum; damping is off in one direction. Compare notch depth across runs to see which.".format(java.util.Locale.US, shortfall)
             }
         }
         return TuningDiagnosis(mu, optRatio, optZeta, optDb, achieved, balance, notch, verdict, advice)
