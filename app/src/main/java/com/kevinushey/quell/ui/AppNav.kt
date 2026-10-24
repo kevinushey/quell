@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.TableChart
+import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -54,10 +55,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavDestination.Companion.hierarchy
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.kevinushey.quell.export.Exporter
 import com.kevinushey.quell.ui.screens.DatasetsScreen
 import com.kevinushey.quell.ui.screens.DiffScreen
@@ -66,6 +69,8 @@ import com.kevinushey.quell.ui.screens.SettingsScreen
 import com.kevinushey.quell.ui.screens.DamperScreen
 import com.kevinushey.quell.ui.screens.SignalScreen
 import com.kevinushey.quell.ui.screens.SpectrumScreen
+import com.kevinushey.quell.ui.screens.SweepScreen
+import com.kevinushey.quell.ui.screens.SweepsScreen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -79,11 +84,16 @@ enum class Screen(val route: String, val title: String, val icon: ImageVector, v
     DAMPER("damper", "Damper", Icons.Default.Tune, longTitle = "Damper evaluation"),
     SIGNAL("signal", "Signal", Icons.Default.GraphicEq, longTitle = "Signal"),
     DATASETS("datasets", "Data", Icons.Default.Storage, longTitle = "Datasets"),
-    RECORD("record", "Record", Icons.Default.Sensors, inBottomBar = false),
+    RECORD("record?sweep={sweep}", "Record", Icons.Default.Sensors, inBottomBar = false),
+    SWEEPS("sweeps", "Sweeps", Icons.Default.Timeline, inBottomBar = false),
+    SWEEP("sweep/{id}", "Sweep", Icons.Default.Timeline, inBottomBar = false),
     SETTINGS("settings", "Settings", Icons.Default.Settings, inBottomBar = false);
 
     companion object {
         fun fromRoute(route: String?): Screen = entries.firstOrNull { it.route == route } ?: SPECTRUM
+
+        fun recordRoute(sweepId: String? = null): String = if (sweepId == null) "record" else "record?sweep=$sweepId"
+        fun sweepRoute(id: String): String = "sweep/$id"
     }
 }
 
@@ -160,7 +170,7 @@ fun AppNav(vm: MainViewModel, pendingImports: StateFlow<List<Uri>>, onImportsCon
                 actions = {
                     if (current.inBottomBar) {
                         IconButton(onClick = import) { Icon(Icons.Default.FileOpen, contentDescription = "Import files") }
-                        IconButton(onClick = { navController.navigate(Screen.RECORD.route) }) {
+                        IconButton(onClick = { navController.navigate(Screen.recordRoute()) }) {
                             Icon(Icons.Default.Sensors, contentDescription = "Record with this device")
                         }
                         Box {
@@ -195,6 +205,14 @@ fun AppNav(vm: MainViewModel, pendingImports: StateFlow<List<Uri>>, onImportsCon
                                                 Exporter.shareSpectraCsv(context, spectra.results, spectra.settings, AnalysisEngine.yAxisLabel(spectra.settings))
                                             }.onFailure { vm.message("Could not export CSV: ${it.message}") }
                                         }
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Sweeps") },
+                                    leadingIcon = { Icon(Icons.Default.Timeline, null) },
+                                    onClick = {
+                                        menuOpen = false
+                                        navController.navigate(Screen.SWEEPS.route)
                                     },
                                 )
                                 DropdownMenuItem(
@@ -239,10 +257,24 @@ fun AppNav(vm: MainViewModel, pendingImports: StateFlow<List<Uri>>, onImportsCon
             NavHost(navController = navController, startDestination = Screen.SPECTRUM.route) {
                 composable(Screen.SPECTRUM.route) { SpectrumScreen(vm, exportHost, onImport = import) }
                 composable(Screen.DIFF.route) { DiffScreen(vm, exportHost) }
-                composable(Screen.DAMPER.route) { DamperScreen(vm, exportHost) }
+                composable(Screen.DAMPER.route) { DamperScreen(vm, exportHost, onOpenSweeps = { navController.navigate(Screen.SWEEPS.route) }) }
                 composable(Screen.SIGNAL.route) { SignalScreen(vm, exportHost) }
-                composable(Screen.DATASETS.route) { DatasetsScreen(vm, onImport = import, onRecord = { navController.navigate(Screen.RECORD.route) }) }
-                composable(Screen.RECORD.route) { RecordScreen(vm, onDone = { navController.popBackStack() }) }
+                composable(Screen.DATASETS.route) { DatasetsScreen(vm, onImport = import, onRecord = { navController.navigate(Screen.recordRoute()) }) }
+                composable(
+                    Screen.RECORD.route,
+                    arguments = listOf(navArgument("sweep") { type = NavType.StringType; nullable = true; defaultValue = null }),
+                ) { entry ->
+                    RecordScreen(vm, sweepId = entry.arguments?.getString("sweep"), onDone = { navController.popBackStack() })
+                }
+                composable(Screen.SWEEPS.route) { SweepsScreen(vm, onOpen = { navController.navigate(Screen.sweepRoute(it)) }) }
+                composable(Screen.SWEEP.route, arguments = listOf(navArgument("id") { type = NavType.StringType })) { entry ->
+                    SweepScreen(
+                        vm,
+                        sweepId = entry.arguments?.getString("id") ?: "",
+                        onRecord = { navController.navigate(Screen.recordRoute(it)) },
+                        onClosed = { navController.popBackStack() },
+                    )
+                }
                 composable(Screen.SETTINGS.route) { SettingsScreen(vm) }
             }
             if (busy)

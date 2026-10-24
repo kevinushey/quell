@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kevinushey.quell.data.ExperimentKind
 import com.kevinushey.quell.data.ParsedRun
+import com.kevinushey.quell.ui.components.parseDecimal
 import com.kevinushey.quell.ui.TapTracker
 import com.kevinushey.quell.ui.TapSummary
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -62,14 +63,18 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
+/** `sweepId` makes this a sweep run: the kind is fixed and the save dialog asks for the parameter value. */
 @Composable
-fun RecordScreen(vm: MainViewModel, onDone: () -> Unit) {
+fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
     val context = LocalContext.current
     val recorder = remember { Recorder(context.applicationContext) }
     val status by recorder.status.collectAsStateWithLifecycle()
+    val sweeps by vm.sweeps.collectAsStateWithLifecycle()
+    val datasets by vm.datasets.collectAsStateWithLifecycle()
+    val sweep = sweepId?.let { id -> sweeps.firstOrNull { it.id == id } }
     var pending by remember { mutableStateOf<ParsedRun?>(null) }
     var liveSpectrum by remember { mutableStateOf<ChartSeries?>(null) }
-    var kind by rememberSaveable { mutableStateOf(ExperimentKind.GENERAL) }
+    var kind by rememberSaveable { mutableStateOf(sweep?.kind ?: ExperimentKind.GENERAL) }
     val tapMode = kind == ExperimentKind.TAP
     var liveTaps by remember { mutableStateOf<TapSummary?>(null) }
     var leaveRequested by remember { mutableStateOf(false) }
@@ -168,14 +173,25 @@ fun RecordScreen(vm: MainViewModel, onDone: () -> Unit) {
     }
 
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        // Both chips off is a plain recording; tapping the active chip returns to that.
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            for (k in listOf(ExperimentKind.DRIVE, ExperimentKind.TAP)) {
-                FilterChip(
-                    selected = kind == k,
-                    onClick = { if (!status.recording) kind = if (kind == k) ExperimentKind.GENERAL else k },
-                    label = { Text(k.label) },
-                )
+        if (sweep != null) {
+            // A sweep run: the sweep decides the kind, and says what comes next.
+            val runNumber = datasets.count { it.sweepId == sweep.id } + 1
+            val next = sweep.suggestedNext
+            Text(
+                "Sweep \"${sweep.name}\", run $runNumber (${sweep.kind.label})" + (if (next != null) ". Set up ${sweep.parameter.format(next)} before starting." else ""),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        } else {
+            // Both chips off is a plain recording; tapping the active chip returns to that.
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                for (k in listOf(ExperimentKind.DRIVE, ExperimentKind.TAP)) {
+                    FilterChip(
+                        selected = kind == k,
+                        onClick = { if (!status.recording) kind = if (kind == k) ExperimentKind.GENERAL else k },
+                        label = { Text(k.label) },
+                    )
+                }
             }
         }
         Card(Modifier.fillMaxWidth()) {
@@ -263,7 +279,17 @@ fun RecordScreen(vm: MainViewModel, onDone: () -> Unit) {
     }
 
     pending?.let { run ->
-        var name by remember { mutableStateOf((if (tapMode) "Tap " else "") + recorder.suggestedName()) }
+        val suggested = sweep?.suggestedNext
+        var valueText by remember { mutableStateOf(suggested?.let { sweep.parameter.formatNumber(it) } ?: "") }
+        val value = parseDecimal(valueText)?.takeIf { it.isFinite() }
+        // Blank leaves the value to be set later; anything else must be a number.
+        val valueValid = sweep == null || valueText.isBlank() || value != null
+        var name by remember {
+            mutableStateOf(
+                if (sweep != null) "${sweep.name} ${datasets.count { it.sweepId == sweep.id } + 1}"
+                else (if (tapMode) "Tap " else "") + recorder.suggestedName()
+            )
+        }
         var saving by remember { mutableStateOf(false) }
         AlertDialog(
             // The capture only exists here, so leaving requires an explicit choice.
@@ -273,13 +299,24 @@ fun RecordScreen(vm: MainViewModel, onDone: () -> Unit) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("${formatCount(run.series.size)} samples over ${formatDuration(run.series.duration)}")
                     OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, singleLine = true)
+                    if (sweep != null) {
+                        OutlinedTextField(
+                            value = valueText,
+                            onValueChange = { valueText = it },
+                            label = { Text(sweep.parameter.label + if (sweep.parameter.unit.isNotEmpty()) " (${sweep.parameter.unit})" else "") },
+                            singleLine = true,
+                            isError = !valueValid,
+                            supportingText = if (valueValid) null else ({ Text("Enter a number") }),
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
+                        )
+                    }
                 }
             },
             confirmButton = {
-                TextButton(enabled = !saving, onClick = {
+                TextButton(enabled = !saving && valueValid, onClick = {
                     scope.launch {
                         saving = true
-                        val ok = vm.addRecording(name.ifBlank { recorder.suggestedName() }, run)
+                        val ok = vm.addRecording(name.ifBlank { recorder.suggestedName() }, run, sweep, value)
                         saving = false
                         // On failure the dialog stays up with the recording intact, for a retry.
                         if (ok) {

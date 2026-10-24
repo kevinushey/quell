@@ -85,6 +85,7 @@ private sealed interface Dialog {
 @Composable
 fun DatasetsScreen(vm: MainViewModel, onImport: () -> Unit, onRecord: () -> Unit) {
     val datasets by vm.datasets.collectAsStateWithLifecycle()
+    val sweeps by vm.sweeps.collectAsStateWithLifecycle()
     val settings by vm.analysis.collectAsStateWithLifecycle()
     val ready by vm.ready.collectAsStateWithLifecycle()
     var dialog by remember { mutableStateOf<Dialog?>(null) }
@@ -120,6 +121,7 @@ fun DatasetsScreen(vm: MainViewModel, onImport: () -> Unit, onRecord: () -> Unit
                 items(datasets, key = { it.id }) { meta ->
                     DatasetRow(
                         meta = meta,
+                        sweepName = meta.sweepId?.let { id -> sweeps.firstOrNull { it.id == id }?.name },
                         isReference = meta.id == settings.referenceId,
                         isFirst = datasets.first().id == meta.id,
                         isLast = datasets.last().id == meta.id,
@@ -218,6 +220,7 @@ private enum class RowAction(val label: String) {
 @Composable
 private fun DatasetRow(
     meta: DatasetMeta,
+    sweepName: String?,
     isReference: Boolean,
     isFirst: Boolean,
     isLast: Boolean,
@@ -248,6 +251,8 @@ private fun DatasetRow(
                     if (meta.kind != ExperimentKind.GENERAL)
                         add(meta.kind.label)
                     meta.damperMassGrams?.let { add("%.1f g".format(java.util.Locale.US, it)) }
+                    if (sweepName != null)
+                        add("sweep: $sweepName")
                     if (meta.isTrimmed)
                         add("trimmed %.1f-%.1f s".format(java.util.Locale.US, meta.trimStart, meta.effectiveTrimEnd))
                 }

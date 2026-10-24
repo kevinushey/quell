@@ -11,9 +11,12 @@ enum class SweepParameter(val label: String, val unit: String) {
     OTHER("Other", "");
 
     fun format(value: Double): String {
-        val number = if (value == Math.rint(value)) "%.0f".format(java.util.Locale.US, value) else "%.2f".format(java.util.Locale.US, value)
+        val number = "%.2f".format(java.util.Locale.US, value).trimEnd('0').trimEnd('.')
         return if (unit.isEmpty()) number else "$number $unit"
     }
+
+    /** The number alone, for text fields and table cells. */
+    fun formatNumber(value: Double): String = "%.2f".format(java.util.Locale.US, value).trimEnd('0').trimEnd('.')
 }
 
 /**
@@ -33,6 +36,8 @@ data class Sweep(
     /** Last value recorded and the step between the last two, to pre-fill the next run. */
     val lastValue: Double? = null,
     val step: Double? = null,
+    /** Value the analysis recommends trying next (the fitted optimum, or past the best end); null when it has none. */
+    val nextValue: Double? = null,
     val notes: String = "",
 ) {
     /**
@@ -41,9 +46,9 @@ data class Sweep(
      */
     fun valueOf(meta: DatasetMeta): Double? = if (parameter == SweepParameter.MASS) meta.damperMassGrams else meta.sweepValue
 
-    /** Suggested value for the next run: continue the last step, or repeat the last value. */
-    val suggestedNext: Double? get() = lastValue?.let { it + (step ?: 0.0) }
+    /** Value to pre-fill for the next run: what the analysis recommends, else continue the last step. */
+    val suggestedNext: Double? get() = nextValue ?: lastValue?.let { it + (step ?: 0.0) }
 
-    /** Bookkeeping after a run at `value` was added. */
-    fun advanced(value: Double): Sweep = copy(lastValue = value, step = lastValue?.let { value - it } ?: step)
+    /** Bookkeeping after a run at `value` was added; the recommendation is recomputed from the new data. */
+    fun advanced(value: Double): Sweep = copy(lastValue = value, step = lastValue?.let { value - it } ?: step, nextValue = null)
 }

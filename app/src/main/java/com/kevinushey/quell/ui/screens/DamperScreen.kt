@@ -69,7 +69,7 @@ private class DriveRow(
 )
 
 @Composable
-fun DamperScreen(vm: MainViewModel, exportHost: ChartExportHost) {
+fun DamperScreen(vm: MainViewModel, exportHost: ChartExportHost, onOpenSweeps: () -> Unit) {
     val datasets by vm.datasets.collectAsStateWithLifecycle()
     val state by vm.spectra.collectAsStateWithLifecycle()
     val settings by vm.analysis.collectAsStateWithLifecycle()
@@ -145,6 +145,7 @@ fun DamperScreen(vm: MainViewModel, exportHost: ChartExportHost) {
                 val half = maxOf(2.0, 0.15 * f)
                 vm.updateAnalysis { it.copy(targetBandLow = (f - half).coerceAtLeast(0.0), targetBandHigh = f + half) }
             }) { Text("Auto band") }
+            TextButton(onClick = onOpenSweeps) { Text("Sweeps") }
         }
 
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {

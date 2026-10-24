@@ -43,6 +43,8 @@ class SweepSummary(
     val optimumHalfWidth: Double,
     /** Plain-language reading of the fit, for the screen. */
     val note: String,
+    /** Parameter value worth recording next, or null when the data give no direction. */
+    val nextValue: Double? = null,
 ) {
     val usable: List<SweepPoint> get() = points.filter { it.usable }
 }
@@ -74,6 +76,8 @@ object SweepAnalysis {
                 baseline == null -> "no baseline chosen"
                 baseline.referenceBandMissing || r.referenceBandMissing -> "reference band not covered"
                 refPeak == null || peak == null -> "no peak inside the target band"
+                // A dead channel or an all-zero capture has no level to compare.
+                !(peak.power > 0) || !(refPeak.power > 0) -> "no power inside the target band"
                 else -> null
             }
             val metric = if (problem == null) 10 * log10(peak!!.power / refPeak!!.power) else Double.NaN
@@ -137,18 +141,33 @@ object SweepAnalysis {
         val usable = points.filter { it.usable }
         val distinct = usable.map { it.value }.distinct().size
         val unit = sweep.parameter
+        // One sigma for the whole sweep: the measurement error of a typical point (and later the scatter about the curve).
+        val typicalError = usable.map { it.error }.filter { it.isFinite() }.sorted().let { if (it.isEmpty()) 0.0 else it[it.size / 2] }
         if (distinct < MIN_POINTS) {
             val note = if (points.any { it.value == null })
                 "Set the ${sweep.parameter.label.lowercase(Locale.US)} on every run, then record at least $MIN_POINTS different values to fit an optimum."
             else
                 "Record at least $MIN_POINTS different values to fit an optimum (${distinct} so far)."
-            return SweepSummary(points, null, null, Double.NaN, note)
+            return SweepSummary(points, null, null, Double.NaN, note, nextAfterTwo(usable, minimize))
         }
         val fit = fit(points) ?: return SweepSummary(points, null, null, Double.NaN, "The values tried do not determine a curve.")
         val lo = usable.minOf { it.value!! }
         val hi = usable.maxOf { it.value!! }
         val span = hi - lo
+        val step = span / (distinct - 1)
         val best = if (minimize) usable.minByOrNull { it.metric }!! else usable.maxByOrNull { it.metric }!!
+        val sigma = maxOf(fit.residualRms, typicalError)
+        val spread = usable.maxOf { it.metric } - usable.minOf { it.metric }
+        // Nothing to optimize yet when every run agrees within its error bars.
+        if (sigma > 0 && spread < 2 * sigma) {
+            return SweepSummary(
+                points, fit, null, Double.NaN,
+                "The runs differ by %.1f%s between best and worst, less than twice their uncertainty (%.1f%s). Spread the values further apart or repeat runs before reading an optimum.".format(
+                    Locale.US, spread, if (minimize) " dB" else "", sigma, if (minimize) " dB" else "",
+                ),
+                if (best.value!! >= hi) hi + step else lo - step,
+            )
+        }
         val curvatureRight = if (minimize) fit.a > 0 else fit.a < 0
         if (!curvatureRight) {
             // The curve bends the wrong way: the best value is at an end, and the trend says which.
@@ -158,32 +177,45 @@ object SweepAnalysis {
                 "No optimum inside %s-%s: the best run is at %s and the trend continues toward %s values. Extend the sweep that way.".format(
                     Locale.US, unit.format(lo), unit.format(hi), unit.format(best.value), further,
                 ),
+                if (best.value >= hi) hi + step else lo - step,
             )
         }
         val x = fit.extremum
-        // One sigma: the larger of the scatter about the curve and the measurement error of a typical point.
-        val typicalError = usable.map { it.error }.filter { it.isFinite() }.sorted().let { if (it.isEmpty()) 0.0 else it[it.size / 2] }
-        val sigma = maxOf(fit.residualRms, typicalError)
         val halfWidth = if (sigma > 0 && fit.a != 0.0) sqrt(sigma / abs(fit.a)) else Double.NaN
         val margin = 0.25 * span
         if (x < lo - margin || x > hi + margin) {
             val side = if (x < lo) "below" else "above"
+            // Head toward it, but no further than one more span: far extrapolations of a parabola are guesses.
+            val next = x.coerceIn(lo - span, hi + span)
             return SweepSummary(
                 points, fit, x, halfWidth,
                 "The fitted optimum, %s, lies %s the range tried (%s-%s). Extend the sweep toward it before trusting the number.".format(
                     Locale.US, unit.format(x), side, unit.format(lo), unit.format(hi),
                 ),
+                next,
             )
         }
         val gain = if (minimize) "%.1f dB below baseline".format(Locale.US, -fit.at(x)) else "damping ratio %.4f".format(Locale.US, fit.at(x))
         val pm = if (halfWidth.isFinite()) " (+/- %s at one sigma)".format(Locale.US, unit.format(halfWidth)) else ""
-        val resolved = halfWidth.isFinite() && halfWidth < span / 2
+        // A prediction counts as confirmed once a run sits inside the one-sigma interval around it.
+        val reach = if (halfWidth.isFinite()) halfWidth else 0.1 * span
+        val confirmed = usable.any { abs(it.value!! - x) <= reach }
         val note = buildString {
             append("Optimum near %s%s, %s.".format(Locale.US, unit.format(x), pm, gain))
-            if (!resolved)
-                append(" The runs differ by less than their uncertainty; repeat runs or spread the values further apart.")
+            if (!confirmed)
+                append(" No run has been made there yet; the curve predicts it from the neighbours. Record one at %s to confirm.".format(Locale.US, unit.format(x)))
         }
-        return SweepSummary(points, fit, x, halfWidth, note)
+        return SweepSummary(points, fit, x, halfWidth, note, if (confirmed) null else x)
+    }
+
+    /** With two values, the better one says which way to go; with one or none, nothing does. */
+    private fun nextAfterTwo(usable: List<SweepPoint>, minimize: Boolean): Double? {
+        val values = usable.mapNotNull { it.value }.distinct().sorted()
+        if (values.size != 2)
+            return null
+        val best = if (minimize) usable.minByOrNull { it.metric }!! else usable.maxByOrNull { it.metric }!!
+        val step = values[1] - values[0]
+        return if (best.value == values[1]) values[1] + step else values[0] - step
     }
 
     private fun det3(

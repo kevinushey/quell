@@ -35,6 +35,10 @@ record directly from the phone's own accelerometer.
   detection with the implied mass ratio, a Den Hartog tuning diagnosis
   (under-damped, over-damped, detuned, near optimal), band RMS versus damper
   mass, and ring-down results for tap tests.
+- Sweeps: group the runs of a tuning session in which one damper parameter
+  (mass, stiffness, position) is stepped, record each run from the sweep with
+  the next value pre-filled, and read the fitted optimum with its uncertainty
+  against the baseline; export the table as CSV.
 - Tap-test recording mode: strike the structure, each ring-down is fitted for
   natural frequency and damping ratio on the spot; beating between two decay
   frequencies is flagged as a coupled absorber.
