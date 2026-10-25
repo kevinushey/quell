@@ -257,7 +257,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         val indexWriteSafe = SyncPlan.indexWriteIsSafe(mergedIndex.map { it.id }, remoteIndex.map { it.id }, deleted)
 
         // A CSV a cut-short pass left under a name this phone no longer writes would otherwise stay partial for good.
-        for (name in SyncPlan.staleCsvInFlight(state, expectedCsv)) {
+        for (name in SyncPlan.staleCsvWrites(state, expectedCsv)) {
             val child = remote[name] ?: continue
             if (runCatching { DocumentsContract.deleteDocument(context.contentResolver, child.uri) }.getOrDefault(false))
                 remote.remove(name)
@@ -287,9 +287,10 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             writeDocument(tree, remote, "$id.bin", "application/octet-stream") { out -> local.inputStream().use { it.copyTo(out) } }
             mirrored.add(id)
         }
+        val csvWritten = HashSet<String>()
         if (csv && plan.csvToWrite.isNotEmpty()) {
             // Recorded before streaming: should the pass die mid-file, the next one knows the copy may be partial.
-            saveState(seenAll.copy(csvInFlight = seenAll.csvInFlight + plan.csvToWrite.mapNotNull { id -> expectedCsv[id]?.let { id to it } }))
+            saveState(seenAll.copy(csvWriting = seenAll.csvWriting + plan.csvToWrite.mapNotNull { id -> expectedCsv[id]?.let { it to id } }))
             for (id in plan.csvToWrite) {
                 val file = repo.datasetFile(id).takeIf { it.exists() } ?: continue
                 val name = expectedCsv[id] ?: continue
@@ -301,6 +302,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                     }
                 }
                 csvNames[id] = name
+                csvWritten.add(name)
             }
         }
         // A deletion is forgotten only once every file of that dataset has really gone.
@@ -345,8 +347,8 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                 badIndexHash = null,
                 badSweepsHash = null,
                 badTombstonesHash = null,
-                // Settled once written and recorded, or gone; a stale copy that would not delete stays flagged.
-                csvInFlight = state.csvInFlight.filter { (id, name) -> name in remote && csvNames[id] != name },
+                // Settled once written through on this pass, or gone; anything else may still be partial.
+                csvWriting = state.csvWriting.filterKeys { it in remote && it !in csvWritten },
             )
         )
         if (settled.isNotEmpty())

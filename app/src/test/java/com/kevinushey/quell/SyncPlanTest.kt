@@ -183,11 +183,25 @@ class SyncPlanTest {
         val id = "0123abcd-0000-0000-0000-000000000000"
         val expected = mapOf(id to "Fast-0123abcd.csv")
         val r = remote("$id.bin", "Run-0123abcd.csv", "index.json", "sweeps.json")
-        val state = SyncState(mirrored = setOf(id), csvInFlight = mapOf(id to "Run-0123abcd.csv"))
+        val state = SyncState(mirrored = setOf(id), csvWriting = mapOf("Run-0123abcd.csv" to id))
         assertEquals(state, SyncPlan.adoptCsvNames(state, expected, r.keys))
-        assertEquals(listOf("Run-0123abcd.csv"), SyncPlan.staleCsvInFlight(state, expected))
+        assertEquals(listOf("Run-0123abcd.csv"), SyncPlan.staleCsvWrites(state, expected))
         // Under the name this phone still writes, the copy is simply written again, not removed.
-        assertTrue(SyncPlan.staleCsvInFlight(state, mapOf(id to "Run-0123abcd.csv")).isEmpty())
+        assertTrue(SyncPlan.staleCsvWrites(state, mapOf(id to "Run-0123abcd.csv")).isEmpty())
+        // One run can leave unfinished copies under its old and new names; only the old one is stale.
+        val both = state.copy(csvWriting = mapOf("Run-0123abcd.csv" to id, "Fast-0123abcd.csv" to id))
+        assertEquals(listOf("Run-0123abcd.csv"), SyncPlan.staleCsvWrites(both, expected))
+    }
+
+    @Test
+    fun aRecordedCsvThatWasStillBeingWrittenIsWrittenAgain() {
+        // The recorded name is in the folder, but a pass died while rewriting it: it may be partial.
+        val id = "0123abcd-0000-0000-0000-000000000000"
+        val r = remote("$id.bin", "Run-0123abcd.csv", "index.json", "sweeps.json")
+        val state = SyncState(mirrored = setOf(id), csvNames = mapOf(id to "Run-0123abcd.csv"), indexHash = "i1", sweepsHash = "s1")
+        assertTrue(plan(listOf(id), r, state, indexIds = listOf(id), csv = true).csvToWrite.isEmpty())
+        val cutShort = state.copy(csvWriting = mapOf("Run-0123abcd.csv" to id))
+        assertEquals(listOf(id), plan(listOf(id), r, cutShort, indexIds = listOf(id), csv = true).csvToWrite)
     }
 
     @Test

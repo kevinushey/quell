@@ -88,8 +88,8 @@ class SweepAnalysisTest {
         val fromZero = SweepAnalysis.summarize(sweep, listOf(0.0, 20.0, 40.0).map { point(it, at(it)) })
         assertNull(fromZero.optimum)
         assertTrue(fromZero.note, fromZero.note.contains("below zero"))
-        // 0 g was already tried, so there is nothing lighter left to suggest.
-        assertNull(fromZero.nextValue)
+        // 0 g was already tried, so the suggestion is a repeat there, never the "continue the last step" fallback (60 g).
+        assertEquals(0.0, fromZero.nextValue!!, 0.0)
         val fromTen = SweepAnalysis.summarize(sweep, listOf(10.0, 30.0, 50.0).map { point(it, at(it)) })
         assertNull(fromTen.optimum)
         assertEquals(0.0, fromTen.nextValue!!, 0.0)

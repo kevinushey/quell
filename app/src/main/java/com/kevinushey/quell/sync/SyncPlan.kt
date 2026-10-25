@@ -19,8 +19,12 @@ data class SyncState(
     val badIndexHash: String? = null,
     val badSweepsHash: String? = null,
     val badTombstonesHash: String? = null,
-    /** CSV copies a pass had started writing and not yet recorded, id to name: possibly partial, so never adopted. */
-    val csvInFlight: Map<String, String> = emptyMap(),
+    /**
+     * CSV files a pass started writing and has not yet seen through, file
+     * name to dataset id: possibly partial, so never adopted and always
+     * rewritten. Keyed by name, as one run can leave copies under two names.
+     */
+    val csvWriting: Map<String, String> = emptyMap(),
 )
 
 /** A file in the mirror folder: its size when the provider reports one, else -1. */
@@ -64,20 +68,21 @@ class SyncPlan(
          * [expectedNames] maps each local id to the name this phone would use.
          */
         fun adoptCsvNames(state: SyncState, expectedNames: Map<String, String>, remoteNames: Collection<String>): SyncState {
-            val found = expectedNames.filterKeys { it !in state.csvNames && it !in state.csvInFlight }.mapNotNull { (id, expected) ->
+            val writing = state.csvWriting.values.toSet()
+            val found = expectedNames.filterKeys { it !in state.csvNames && it !in writing }.mapNotNull { (id, expected) ->
                 remoteNames.firstOrNull { it.endsWith("-${id.take(8)}.csv") && it != expected }?.let { id to it }
             }
             return if (found.isEmpty()) state else state.copy(csvNames = state.csvNames + found)
         }
 
         /**
-         * In-flight CSVs under a name this phone will not write again for that
+         * Unfinished CSVs under a name this phone will not write again for that
          * run (renamed or deleted since): possibly partial and otherwise never
          * replaced, so the pass removes them. Another phone that wrote the same
          * name has it in its own record and writes it again.
          */
-        fun staleCsvInFlight(state: SyncState, expectedNames: Map<String, String>): List<String> =
-            state.csvInFlight.filter { (id, name) -> name != expectedNames[id] && state.csvNames[id] != name }.values.toList()
+        fun staleCsvWrites(state: SyncState, expectedNames: Map<String, String>): List<String> =
+            state.csvWriting.filter { (name, id) -> name != expectedNames[id] }.keys.toList()
 
         /**
          * Up to [maxAttempts] delayed passes after a transient folder failure,
@@ -151,7 +156,8 @@ class SyncPlan(
             }
             // A run deleted on another phone (a folder tombstone) is kept here but never uploaded again.
             val bins = localIds.filter { it !in deletedIds && !complete("$it.bin", localBinSizes[it]) }
-            val csvs = if (csv) localIds.filter { id -> id !in deletedIds && (state.csvNames[id]?.let { it !in remote } ?: true) } else emptyList()
+            // A recorded copy that a pass was still writing when it died may be partial: written again.
+            val csvs = if (csv) localIds.filter { id -> id !in deletedIds && (state.csvNames[id]?.let { it !in remote || it in state.csvWriting } ?: true) } else emptyList()
             val deletions = LinkedHashMap<String, List<String>>()
             for (id in deletedIds) {
                 if (id in local)
