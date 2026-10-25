@@ -209,7 +209,7 @@ fun SweepScreen(vm: MainViewModel, sweepId: String, onRecord: (String) -> Unit, 
         } else {
             val base = baseline?.let { vm.spectrumResult(it, settings) }
             val results = members.mapNotNull { vm.spectrumResult(it, settings) }
-            SweepAnalysis.drivePoints(sweep, results, base, lo, hi)
+            SweepAnalysis.drivePoints(sweep, results, base, lo, hi, baselineFailed = baseline != null && base == null)
         }
         value = SweepAnalysis.summarize(sweep, points)
     }

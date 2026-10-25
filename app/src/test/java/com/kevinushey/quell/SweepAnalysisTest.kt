@@ -138,6 +138,17 @@ class SweepAnalysisTest {
     }
 
     @Test
+    fun aBaselineThatFailedIsNotReportedAsMissing() {
+        val fs = 400.0
+        val freq = DoubleArray(513) { it * fs / 1024 }
+        val s = com.kevinushey.quell.dsp.Spectrum(freq, DoubleArray(513) { 1e-3 }, 4, 1024)
+        val run = com.kevinushey.quell.ui.SpectrumResult(meta("run", 50.0), s, s, DoubleArray(s.size), emptyList(), fs, 1.0)
+        assertEquals("no baseline chosen", SweepAnalysis.drivePoints(sweep, listOf(run), null, 20.0, 30.0)[0].problem)
+        val failed = SweepAnalysis.drivePoints(sweep, listOf(run), null, 20.0, 30.0, baselineFailed = true)[0].problem!!
+        assertTrue(failed, failed.startsWith("baseline could not be analyzed"))
+    }
+
+    @Test
     fun suggestionsNeverGoNegativeForMasses() {
         // Lighter keeps getting better: the next step down from 10 g would be -10 g.
         val pts = listOf(point(10.0, -4.0), point(30.0, -2.0), point(50.0, -1.0))

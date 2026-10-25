@@ -90,7 +90,15 @@ object SweepAnalysis {
      * relative to the same peak on the baseline. Spectra are expected on the
      * reference-band scale when that normalization is active.
      */
-    fun drivePoints(sweep: Sweep, members: List<SpectrumResult>, baseline: SpectrumResult?, lo: Double, hi: Double): List<SweepPoint> {
+    /** `baselineFailed`: a baseline is chosen but could not be analyzed, which is not the same as none chosen. */
+    fun drivePoints(
+        sweep: Sweep,
+        members: List<SpectrumResult>,
+        baseline: SpectrumResult?,
+        lo: Double,
+        hi: Double,
+        baselineFailed: Boolean = false,
+    ): List<SweepPoint> {
         val refSpectrum = baseline?.let { if (it.referenceScale != 1.0) it.raw.map { _, p -> p * it.referenceScale } else it.raw }
         val refPeak = refSpectrum?.let { Modal.dominantPeak(it, lo, hi) }
         val refRms = refSpectrum?.bandRms(lo, hi) ?: Double.NaN
@@ -99,6 +107,7 @@ object SweepAnalysis {
             val peak = Modal.dominantPeak(s, lo, hi)
             val rms = s.bandRms(lo, hi)
             val problem = when {
+                baseline == null && baselineFailed -> "baseline could not be analyzed; adjust its analysis window on the Data tab"
                 baseline == null -> "no baseline chosen"
                 baseline.referenceBandMissing || r.referenceBandMissing -> "reference band not covered"
                 refPeak == null || peak == null -> "no peak inside the target band"

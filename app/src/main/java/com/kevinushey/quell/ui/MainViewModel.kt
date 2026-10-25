@@ -501,7 +501,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val key = PsdKey(meta.id, s.channel, s.segmentSize, s.window, s.overlap, meta.trimStart, meta.trimEnd)
         cacheMutex.withLock { psdCache[key] }?.let { return it }
         val r = resampled(meta) ?: return null
-        val psd = AnalysisEngine.rawPsd(r, s.channel, s.segmentSize, s.window, s.overlap) to r.sampleRate
+        // Welch over a long run is seconds of work, and some callers (the sweep screen's produceState) are on the main thread.
+        val psd = withContext(Dispatchers.Default) { AnalysisEngine.rawPsd(r, s.channel, s.segmentSize, s.window, s.overlap) } to r.sampleRate
         cacheMutex.withLock {
             psdCache[key] = psd
             // Bound memory: drop the oldest entries past a generous limit.
