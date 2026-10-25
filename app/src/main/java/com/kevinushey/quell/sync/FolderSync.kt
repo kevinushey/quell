@@ -219,7 +219,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         val remote = listChildren(tree)
         val metas = repo.datasets.value
         val localIds = metas.map { it.id }.toSet()
-        val state = SyncPlan.adoptCsvNames(loadState(), localIds, remote.keys)
+        val state = SyncPlan.adoptCsvNames(loadState(), metas.associate { it.id to csvName(it) }, remote.keys)
 
         // The folder's index carries forward entries this phone does not have, unless they were deleted here.
         // A damaged index or sweep list is set aside once it has been seen damaged twice (so a neighbour's
@@ -400,12 +400,13 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
     }
 
     private fun readBytes(uri: Uri, name: String): ByteArray {
-        val stream = try {
-            context.contentResolver.openInputStream(uri)
+        // A provider streaming the download can also fail partway through: just as transient as failing to open.
+        try {
+            val stream = context.contentResolver.openInputStream(uri) ?: throw java.io.IOException("no stream")
+            return stream.use { it.readBytes() }
         } catch (e: Exception) {
             throw RetryLater("The folder's $name could not be read right now")
-        } ?: throw RetryLater("The folder's $name could not be read right now")
-        return stream.use { it.readBytes() }
+        }
     }
 
     private companion object {

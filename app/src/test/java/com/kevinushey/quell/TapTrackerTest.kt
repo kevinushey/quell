@@ -61,4 +61,46 @@ class TapTrackerTest {
         for (tap in last.taps)
             assertTrue("envelope not relative: ${tap.envelopeTimes.first()}", tap.envelopeTimes.first() < 3.0)
     }
+
+    @Test
+    fun aRejectedDoubleStrikeAddsNoPhantomTap() {
+        // Strikes at 2.0 and 3.5 s share one window, whose envelope fit fails; clean taps follow at 10 and 14 s.
+        val strikes = listOf(2.0, 3.5, 10.0, 14.0)
+        fun capture(seconds: Double): TimeSeries {
+            val n = (seconds * fs).toInt()
+            val time = DoubleArray(n) { it / fs }
+            val z = DoubleArray(n) { i ->
+                var v = 9.81
+                for (s in strikes) {
+                    val dt = time[i] - s
+                    if (dt >= 0)
+                        v += 30.0 * exp(-0.02 * 2 * PI * 25.0 * dt) * sin(2 * PI * 25.0 * dt)
+                }
+                v
+            }
+            return TimeSeries(time, DoubleArray(n), DoubleArray(n), z)
+        }
+        val full = TapAnalysis.analyze(capture(18.0), threshold = 5.0)
+        assertEquals(listOf(10.0, 14.0), full.taps.map { Math.round(it.impulseTime * 10) / 10.0 })
+
+        // The second strike sits inside the rejected window, so the tracker must never resume there and count it.
+        val tracker = TapTracker(threshold = 5.0)
+        var last = tracker.update(capture(1.0))
+        var seconds = 1.5
+        while (seconds <= 18.0) {
+            val whole = capture(seconds)
+            var start = 0
+            while (start < whole.size && whole.time[start] < tracker.resumeFrom)
+                start++
+            val part = TimeSeries(
+                whole.time.copyOfRange(start, whole.size),
+                whole.x.copyOfRange(start, whole.size),
+                whole.y.copyOfRange(start, whole.size),
+                whole.z.copyOfRange(start, whole.size),
+            )
+            last = tracker.update(part)
+            seconds += 0.5
+        }
+        assertEquals(full.taps.map { Math.round(it.impulseTime * 10) / 10.0 }, last.taps.map { Math.round(it.impulseTime * 10) / 10.0 })
+    }
 }

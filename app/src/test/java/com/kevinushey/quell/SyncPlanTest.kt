@@ -163,12 +163,18 @@ class SyncPlanTest {
         // The run was "Baseline" on the other phone and is "Baseline (2)" here; its CSV is already in the folder.
         val id = "0123abcd-0000-0000-0000-000000000000"
         val r = remote("$id.bin", "Baseline-0123abcd.csv", "index.json", "sweeps.json")
-        val state = SyncPlan.adoptCsvNames(SyncState(mirrored = setOf(id)), listOf(id), r.keys)
+        val expected = mapOf(id to "Baseline _2_-0123abcd.csv")
+        val state = SyncPlan.adoptCsvNames(SyncState(mirrored = setOf(id)), expected, r.keys)
         assertEquals(mapOf(id to "Baseline-0123abcd.csv"), state.csvNames)
         assertTrue(plan(listOf(id), r, state, indexIds = listOf(id), csv = true).csvToWrite.isEmpty())
         // A name this phone already tracks is left alone.
         val tracked = SyncState(csvNames = mapOf(id to "Mine-0123abcd.csv"))
-        assertEquals(tracked, SyncPlan.adoptCsvNames(tracked, listOf(id), r.keys))
+        assertEquals(tracked, SyncPlan.adoptCsvNames(tracked, expected, r.keys))
+        // This phone's own name with no record is a write cut short: not adopted, so it is written again.
+        val own = remote("$id.bin", "Baseline _2_-0123abcd.csv", "index.json", "sweeps.json")
+        val untracked = SyncPlan.adoptCsvNames(SyncState(mirrored = setOf(id)), expected, own.keys)
+        assertTrue(untracked.csvNames.isEmpty())
+        assertEquals(listOf(id), plan(listOf(id), own, untracked, indexIds = listOf(id), csv = true).csvToWrite)
     }
 
     @Test

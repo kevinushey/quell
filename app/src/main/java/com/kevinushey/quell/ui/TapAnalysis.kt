@@ -6,8 +6,12 @@ import com.kevinushey.quell.dsp.RingDown
 import com.kevinushey.quell.dsp.RingDownResult
 import kotlin.math.sqrt
 
-/** All taps found in one recording, with their pooled modal estimate. */
-class TapSummary(val taps: List<RingDownResult>, val sampleRate: Double) {
+/**
+ * All taps found in one recording, with their pooled modal estimate.
+ * [rejectedImpulses] are impulses detected but fitted too poorly to count
+ * (seconds, same base as the taps): their windows were skipped all the same.
+ */
+class TapSummary(val taps: List<RingDownResult>, val sampleRate: Double, val rejectedImpulses: List<Double> = emptyList()) {
     val count: Int get() = taps.size
     val meanFreq: Double get() = taps.map { it.naturalFreq }.average()
     val meanDamping: Double get() = taps.map { it.dampingRatio }.average()
@@ -55,7 +59,11 @@ object TapAnalysis {
         val offset = slice.time.first() - series.time.first()
         if (offset == 0.0)
             return summary
-        return TapSummary(summary.taps.map { it.copy(impulseTime = it.impulseTime + offset) }, summary.sampleRate)
+        return TapSummary(
+            summary.taps.map { it.copy(impulseTime = it.impulseTime + offset) },
+            summary.sampleRate,
+            summary.rejectedImpulses.map { it + offset },
+        )
     }
 
     /**
@@ -71,6 +79,7 @@ object TapAnalysis {
         val signal = RingDown.dominantAxis(r.x, r.y, r.z)
 
         val results = ArrayList<RingDownResult>()
+        val rejected = ArrayList<Double>()
         var from = 0
         // A bogus sample rate (e.g. nanosecond timestamps) can round the window to 0; always advance.
         val window = (windowSeconds * fs).toInt().coerceAtLeast(1)
@@ -82,15 +91,18 @@ object TapAnalysis {
             val at = RingDown.detectImpulse(signal, threshold, from, mean)
             if (at < 0)
                 break
-            RingDown.analyze(signal, fs, impulseIndex = at, windowSeconds = windowSeconds)
+            val fit = RingDown.analyze(signal, fs, impulseIndex = at, windowSeconds = windowSeconds)
                 ?.takeIf { it.fitR2 >= minR2 && it.dampingRatio > 0 }
-                ?.let { results.add(it) }
+            if (fit != null)
+                results.add(fit)
+            else
+                rejected.add(at / fs)
             val next = minOf(at + window, signal.size)
             for (i in from until next)
                 suffixSum -= signal[i]
             from = next
         }
-        return TapSummary(results, fs)
+        return TapSummary(results, fs, rejected)
     }
 }
 
@@ -137,8 +149,18 @@ class TapTracker(private val threshold: Double, private val windowSeconds: Doubl
                 pending.add(shifted)
             }
         }
+        // A rejected impulse claims its window as a tap does, or a resume inside it would count its tail (or a
+        // second strike) as a tap the saved recording's analysis never sees.
+        var rejectedPending = false
+        for (t in summary.rejectedImpulses) {
+            val at = t + origin
+            if (at + windowSeconds <= end)
+                resumeFrom = maxOf(resumeFrom, at + windowSeconds)
+            else
+                rejectedPending = true
+        }
         // With nothing unfolding, anything older than two windows has had every chance to be detected.
-        if (pending.isEmpty())
+        if (pending.isEmpty() && !rejectedPending)
             resumeFrom = maxOf(resumeFrom, end - 2 * windowSeconds)
         return TapSummary(completed + pending, sampleRate)
     }

@@ -125,7 +125,8 @@ object Tuning {
             }
             else -> {
                 verdict = DampingVerdict.INCONCLUSIVE
-                advice = "Peaks are balanced but %.1f dB short of optimum; damping is off in one direction. Compare notch depth across runs to see which.".format(java.util.Locale.US, shortfall)
+                // Probably under-damped (see above), but road input or a misread mass ratio can also leave a shortfall.
+                advice = "Peaks are balanced but %.1f dB short of optimum. A visible split usually means the absorber needs more damping: try a lossier mount, targeting zeta about %.3f. If that does not close the gap, check that both runs had the same road input.".format(java.util.Locale.US, shortfall, optZeta)
             }
         }
         return TuningDiagnosis(mu, optRatio, optZeta, optDb, achieved, balance, notch, verdict, advice)
