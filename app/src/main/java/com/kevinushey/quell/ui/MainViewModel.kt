@@ -217,8 +217,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * Persists a recording; false means it was not saved and the caller must keep it.
      * Inside a sweep the run joins it at `value`, and the sweep remembers the step.
+     * `trim`, when given, is the run's starting analysis window (seconds from its first sample).
      */
-    /** `trim`, when given, is the run's starting analysis window (seconds from its first sample). */
     suspend fun addRecording(
         name: String,
         run: ParsedRun,
@@ -237,6 +237,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (sweep != null && value != null) {
                 try {
                     repo.updateSweep(sweep.id) { it.advanced(value) }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     _messages.tryEmit("Saved recording \"$name\", but the sweep's next step could not be recorded: ${e.message}")
                     return@withLock true
@@ -244,12 +246,47 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             _messages.tryEmit("Saved recording \"$name\"")
             true
+        } catch (e: CancellationException) {
+            // Cancelled is not failed: the write may well have completed, and a retry would save it twice.
+            throw e
         } catch (e: Exception) {
             _messages.tryEmit("Could not save recording: ${e.message}")
             false
         } finally {
             _busy.value--
         }
+    }
+
+    private val _savingRecording = MutableStateFlow(false)
+    val savingRecording: StateFlow<Boolean> = _savingRecording
+    /** Set once the pending recording is stored, for the Record screen to leave; cleared by [recordingSavedHandled]. */
+    private val _recordingSaved = MutableStateFlow(false)
+    val recordingSaved: StateFlow<Boolean> = _recordingSaved
+
+    /**
+     * Saves the pending recording on the view model's scope: a screen
+     * recreated mid-save can neither cut the write short nor offer the
+     * same run for saving a second time.
+     */
+    fun savePendingRecording(name: String, sweep: Sweep?, value: Double?, trim: ClosedFloatingPointRange<Double>?) {
+        val run = _pendingRecording.value ?: return
+        if (_savingRecording.value)
+            return
+        _savingRecording.value = true
+        viewModelScope.launch {
+            try {
+                if (addRecording(name, run, sweep, value, trim)) {
+                    _pendingRecording.value = null
+                    _recordingSaved.value = true
+                }
+            } finally {
+                _savingRecording.value = false
+            }
+        }
+    }
+
+    fun recordingSavedHandled() {
+        _recordingSaved.value = false
     }
 
     /** Samples of one dataset inside an absolute time range, read from disk when the run is not cached. */

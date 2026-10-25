@@ -270,7 +270,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             remote.mapValues { RemoteFile(it.value.size) },
             remoteIndex.map { it.id },
             deleted,
-            state,
+            SyncPlan.forPlanning(state, expectedCsv),
             indexHash,
             indexBytes.size.toLong(),
             sweepsHash,

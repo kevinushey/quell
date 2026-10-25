@@ -24,8 +24,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import kotlinx.coroutines.launch
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -94,7 +92,8 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
     var wentToBackground by remember { mutableStateOf(false) }
     val settings by vm.analysis.collectAsStateWithLifecycle()
     val liveColor = MaterialTheme.colorScheme.primary
-    val scope = rememberCoroutineScope()
+    val saving by vm.savingRecording.collectAsStateWithLifecycle()
+    val saved by vm.recordingSaved.collectAsStateWithLifecycle()
 
     // Leaving the screen ends the capture; a configuration change does not leave it. Normal navigation is intercepted below.
     DisposableEffect(Unit) {
@@ -102,7 +101,16 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
             if (activity?.isChangingConfigurations != true) {
                 recorder.discard()
                 vm.setPendingRecording(null)
+                vm.recordingSavedHandled()
             }
+        }
+    }
+
+    // The save runs in the view model; this screen (perhaps a recreated one) leaves once it lands.
+    LaunchedEffect(saved) {
+        if (saved) {
+            vm.recordingSavedHandled()
+            onDone()
         }
     }
 
@@ -140,7 +148,8 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
                 Row {
                     TextButton(onClick = {
                         leaveRequested = false
-                        recorder.stop()
+                        // Not stop(): that would copy the whole capture only to drop it.
+                        recorder.discard()
                         onDone()
                     }) { Text("Discard") }
                     TextButton(onClick = { leaveRequested = false }) { Text("Keep recording") }
@@ -376,7 +385,6 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
                 else (if (run.locationMarks.isNotEmpty()) "Antinode " else if (tapMode) "Tap " else "") + recorder.suggestedName()
             )
         }
-        var saving by remember { mutableStateOf(false) }
         val gaps = remember(run) { StreamGaps.find(run.series.time) }
         // A break biases a spectrum, so drive and plain runs start on their longest unbroken stretch; tap runs keep
         // every stretch, since their taps (and antinode locations) may sit on either side of a break.
@@ -414,16 +422,8 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
             },
             confirmButton = {
                 TextButton(enabled = !saving && valueValid, onClick = {
-                    scope.launch {
-                        saving = true
-                        val ok = vm.addRecording(name.ifBlank { recorder.suggestedName() }, run, sweep, value, trim)
-                        saving = false
-                        // On failure the dialog stays up with the recording intact, for a retry.
-                        if (ok) {
-                            vm.setPendingRecording(null)
-                            onDone()
-                        }
-                    }
+                    // On failure the dialog stays up with the recording intact, for a retry; success leaves via `saved`.
+                    vm.savePendingRecording(name.ifBlank { recorder.suggestedName() }, sweep, value, trim)
                 }) { Text(if (saving) "Saving..." else "Save") }
             },
             dismissButton = { TextButton(enabled = !saving, onClick = { vm.setPendingRecording(null) }) { Text("Discard") } },

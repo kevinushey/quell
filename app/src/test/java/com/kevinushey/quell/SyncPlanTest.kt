@@ -209,6 +209,18 @@ class SyncPlanTest {
     }
 
     @Test
+    fun aStaleUnfinishedCopyThatWillNotDeleteForcesNoRewrite() {
+        // "Old-..." was cut short before a rename and the folder refuses to delete it; "Fast-..." is complete and recorded.
+        val id = "0123abcd-0000-0000-0000-000000000000"
+        val expected = mapOf(id to "Fast-0123abcd.csv")
+        val r = remote("$id.bin", "Old-0123abcd.csv", "Fast-0123abcd.csv", "index.json", "sweeps.json")
+        val state = SyncState(mirrored = setOf(id), csvNames = expected, indexHash = "i1", sweepsHash = "s1", csvWriting = mapOf("Old-0123abcd.csv" to id))
+        assertTrue(plan(listOf(id), r, SyncPlan.forPlanning(state, expected), indexIds = listOf(id), csv = true).csvToWrite.isEmpty())
+        // The entry itself survives for the delete to retry.
+        assertEquals(listOf("Old-0123abcd.csv"), SyncPlan.staleCsvWrites(state, expected))
+    }
+
+    @Test
     fun aTransientFailureGetsEveryRetryThenHandsOverToSyncNow() = kotlinx.coroutines.runBlocking {
         // Every pass still failing: all three run, then the caller is told to stop.
         var attempts = 0

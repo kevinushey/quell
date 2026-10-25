@@ -108,6 +108,8 @@ class SweepAnalysisTest {
         assertNull(summary.optimum)
         assertNull(summary.fit)
         assertTrue(summary.note, summary.note.contains("two clean taps"))
+        // The best value is in the middle: repeat there rather than step off an end.
+        assertEquals(30.0, summary.nextValue!!, 0.0)
     }
 
     @Test

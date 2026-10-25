@@ -228,7 +228,12 @@ object SweepAnalysis {
             return SweepSummary(
                 points, pooled, null, Double.NaN, null, Double.NaN,
                 "No run here has its own error estimate (a tap run needs at least two clean taps), and $distinct values fit the curve exactly, so nothing says how far to trust it. Repeat runs with more taps, or record one more value.",
-                suggest(sweep, if (best.value >= hi) hi + step else lo - step),
+                // Beyond the best end, or a repeat where the best value already is.
+                suggest(sweep, when {
+                    best.value >= hi -> hi + step
+                    best.value <= lo -> lo - step
+                    else -> best.value
+                }),
             )
         }
         val sigma = maxOf(fit.residualRms, typicalError)

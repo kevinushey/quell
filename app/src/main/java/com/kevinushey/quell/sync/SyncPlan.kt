@@ -85,6 +85,15 @@ class SyncPlan(
             state.csvWriting.filter { (name, id) -> name != expectedNames[id] }.keys.toList()
 
         /**
+         * The state to plan from: unfinished entries under a name the run no
+         * longer uses and that nothing records are left out, as the stale
+         * delete handles them; one that would not delete must not force the
+         * run's whole CSV to be uploaded again on every pass.
+         */
+        fun forPlanning(state: SyncState, expectedNames: Map<String, String>): SyncState =
+            state.copy(csvWriting = state.csvWriting.filter { (name, id) -> name == expectedNames[id] || name == state.csvNames[id] })
+
+        /**
          * Up to [maxAttempts] delayed passes after a transient folder failure,
          * stopping at the first that does not ask for another. True when every
          * attempt still asked for one: the caller hands over to Sync now.
