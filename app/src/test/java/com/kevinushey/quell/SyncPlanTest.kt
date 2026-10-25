@@ -221,6 +221,23 @@ class SyncPlanTest {
     }
 
     @Test
+    fun aRecordedCopyCutShortAndThenRenamedIsWrittenUnderTheNewName() {
+        // The recorded "Run-..." was itself cut short, the run is now "Fast", and the folder will not delete "Run-...".
+        val id = "0123abcd-0000-0000-0000-000000000000"
+        val expected = mapOf(id to "Fast-0123abcd.csv")
+        val r = remote("$id.bin", "Run-0123abcd.csv", "index.json", "sweeps.json")
+        val state = SyncState(
+            mirrored = setOf(id),
+            csvNames = mapOf(id to "Run-0123abcd.csv"),
+            indexHash = "i1",
+            sweepsHash = "s1",
+            csvWriting = mapOf("Run-0123abcd.csv" to id),
+        )
+        assertEquals(listOf(id), plan(listOf(id), r, SyncPlan.forPlanning(state, expected), indexIds = listOf(id), csv = true).csvToWrite)
+        assertEquals(listOf("Run-0123abcd.csv"), SyncPlan.staleCsvWrites(state, expected))
+    }
+
+    @Test
     fun aTransientFailureGetsEveryRetryThenHandsOverToSyncNow() = kotlinx.coroutines.runBlocking {
         // Every pass still failing: all three run, then the caller is told to stop.
         var attempts = 0
