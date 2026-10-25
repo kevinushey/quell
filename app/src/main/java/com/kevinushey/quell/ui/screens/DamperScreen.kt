@@ -206,7 +206,7 @@ fun DamperScreen(vm: MainViewModel, exportHost: ChartExportHost, onOpenSweeps: (
                     for (r in rows) {
                         if (r.result.meta.id == driveRef.result.meta.id || r.bandRms.isNaN())
                             continue
-                        val d = Tuning.diagnose(driveRef.peak, r.spectrum, lo, hi, r.split) ?: continue
+                        val d = Tuning.diagnose(driveRef.peak, r.spectrum, lo, hi, r.split, r.result.meta.damperMassGrams, r.result.segmentErrorDb) ?: continue
                         item { DiagnosisCard(r, d) }
                     }
                 }
@@ -216,20 +216,37 @@ fun DamperScreen(vm: MainViewModel, exportHost: ChartExportHost, onOpenSweeps: (
                     item {
                         Card(Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                // The reference's own peak frees the estimate from assuming the absorber is tuned to it.
+                                val fn = driveRef?.peak?.freq?.takeIf { driveRef.peak.power > 0 }
                                 for (r in splits) {
                                     val sp = r.split!!
                                     val mass = r.result.meta.damperMassGrams
+                                    val notch = Tuning.notchDepthDb(sp)
+                                    val needed = Tuning.requiredNotchDb(r.result.segmentErrorDb)
+                                    val a = fn?.takeIf { !(notch < needed) }?.let { Tuning.absorber(it, sp.lower.freq, sp.upper.freq, mass?.let { g -> g / 1000 }) }
                                     Text(r.result.meta.name, style = MaterialTheme.typography.labelLarge, color = seriesColor(r.result.meta.colorIndex), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Text(
-                                        "peaks %.2f / %.2f Hz, notch %.2f Hz  ->  fn %.2f Hz, mass ratio %.3f%s".format(
-                                            Locale.US, sp.lower.freq, sp.upper.freq, sp.notchFreq, sp.impliedNaturalFreq, sp.impliedMassRatio,
+                                    val reading = if (notch < needed)
+                                        "notch %.1f dB, within this spectrum's noise (%.1f dB needed): possibly not a real split".format(Locale.US, notch, needed)
+                                    else if (a != null)
+                                        "absorber %.2f Hz (%.3f of fn %.2f Hz), mass ratio %.3f%s".format(
+                                            Locale.US, a.freq, a.tuningRatio, fn, a.massRatio,
+                                            if (a.modalMass.isFinite()) ", modal mass ~%.2f kg".format(Locale.US, a.modalMass) else "",
+                                        )
+                                    else
+                                        "fn %.2f Hz, mass ratio %.3f%s (assuming the absorber is tuned to fn)".format(
+                                            Locale.US, sp.impliedNaturalFreq, sp.impliedMassRatio,
                                             if (mass != null && sp.impliedMassRatio > 0) ", modal mass ~%.0f g".format(Locale.US, mass / sp.impliedMassRatio) else "",
-                                        ),
+                                        )
+                                    Text(
+                                        "peaks %.2f / %.2f Hz, notch %.2f Hz  ->  %s".format(Locale.US, sp.lower.freq, sp.upper.freq, sp.notchFreq, reading),
                                         style = MaterialTheme.typography.bodySmall,
                                     )
                                 }
                                 Text(
-                                    "Mass ratio from the undamped-absorber relation f1^2 + f2^2 = fn^2 (2 + mu). Treat it as an order of magnitude.",
+                                    if (fn != null)
+                                        "From the two-mass relations f1 f2 = fn fa and f1^2 + f2^2 = fn^2 + (1 + mu) fa^2, with fn the reference's peak. Good to about a percent on the absorber frequency, less on the mass ratio. Modal mass needs the damper mass set, taken as the moving mass."
+                                    else
+                                        "Choose a reference run to measure the absorber's own frequency; without one the mass ratio assumes it is tuned to the structure. Treat it as an order of magnitude.",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -271,9 +288,16 @@ fun DamperScreen(vm: MainViewModel, exportHost: ChartExportHost, onOpenSweeps: (
                                 TapTableRow(m, s, loading = tapSummaries == null, failed = state?.isFailure == true, ref = refSummary, isRef = m.id == tapRef?.id)
                                 if (s != null && s.beatingTaps > 0) {
                                     val (f1, f2) = s.beatFrequencies!!
+                                    // A reference tap run without the absorber supplies fn, so the absorber's tuning can be read too.
+                                    val refFn = refSummary?.takeIf { m.id != tapRef?.id && it.count > 0 }?.meanFreq
+                                    val a = refFn?.let { Tuning.absorber(it, f1, f2, m.damperMassGrams?.let { g -> g / 1000 }) }
+                                    val reading = if (a != null)
+                                        "absorber %.2f Hz (%.3f of the reference's %.2f Hz, optimal %.3f), mass ratio %.3f".format(Locale.US, a.freq, a.tuningRatio, refFn, a.optimalTuningRatio, a.massRatio)
+                                    else
+                                        "implied mass ratio %.3f".format(Locale.US, s.impliedMassRatio)
                                     Text(
-                                        "  beating in %d of %d taps: %.2f / %.2f Hz, implied mass ratio %.3f. Strong beating with slow decay means the absorber is under-damped; a single faster decay means it is well damped or over-damped.".format(
-                                            Locale.US, s.beatingTaps, s.count, f1, f2, s.impliedMassRatio
+                                        "  beating in %d of %d taps: %.2f / %.2f Hz, %s. Strong beating with slow decay means the absorber is under-damped; a single faster decay means it is well damped or over-damped.".format(
+                                            Locale.US, s.beatingTaps, s.count, f1, f2, reading
                                         ),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.tertiary,
@@ -337,6 +361,19 @@ private fun DiagnosisCard(r: DriveRow, d: TuningDiagnosis) {
                     add("balance %+.1f dB".format(Locale.US, d.peakBalanceDb))
             }
             Text(facts.joinToString("  |  "), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            d.absorber?.let { a ->
+                val parts = buildList {
+                    add("absorber %.2f Hz, tuning %.3f (optimal %.3f)".format(Locale.US, a.freq, a.tuningRatio, a.optimalTuningRatio))
+                    if (a.stiffness.isFinite())
+                        add("spring %.2f N/mm".format(Locale.US, a.stiffness / 1000))
+                    if (a.modalMass.isFinite())
+                        add("modal mass %.2f kg".format(Locale.US, a.modalMass))
+                    if (a.optimalMass.isFinite() && a.optimalStiffness.isFinite())
+                        add("optimal: %.1f g on this spring, or %.2f N/mm for this mass".format(Locale.US, a.optimalMass * 1000, a.optimalStiffness / 1000))
+                }
+                Text(parts.joinToString("  |  "), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            d.absorberWithheld?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
     }
 }

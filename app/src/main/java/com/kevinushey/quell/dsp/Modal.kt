@@ -1,5 +1,6 @@
 package com.kevinushey.quell.dsp
 
+import kotlin.math.ln
 import kotlin.math.sqrt
 
 /** A resonance peak with its half-power bandwidth and the damping ratio implied by it. */
@@ -20,7 +21,11 @@ data class SplitPeak(
     val notchFreq: Double,
     val notchPower: Double,
 ) {
-    /** Undamped-absorber relation: f1*f2 = fn^2 and f1^2 + f2^2 = fn^2 (2 + mu). */
+    /**
+     * Undamped-absorber relation for an absorber tuned to the structure:
+     * f1*f2 = fn^2 and f1^2 + f2^2 = fn^2 (2 + mu). The fallback when no
+     * baseline frequency is known; Tuning.absorber drops the tuning assumption.
+     */
     val impliedNaturalFreq: Double get() = sqrt(lower.freq * upper.freq)
     val impliedMassRatio: Double get() = (lower.freq * lower.freq + upper.freq * upper.freq) / (lower.freq * upper.freq) - 2.0
 }
@@ -41,7 +46,28 @@ object Modal {
         val left = crossing(s, peak, -1, first, half)
         val right = crossing(s, peak, +1, last, half)
         val bw = if (left.isNaN() || right.isNaN()) Double.NaN else right - left
-        return ModalPeak(s.freq[peak], s.power[peak], bw)
+        return ModalPeak(refinedFreq(s, peak), s.power[peak], bw)
+    }
+
+    /**
+     * Peak frequency between bins, from a parabola through the log power of
+     * the peak bin and its neighbours. Absorber tuning compares frequencies a
+     * few percent apart, and a bin is about 1.6% of 25 Hz at 1024 points.
+     */
+    private fun refinedFreq(s: Spectrum, peak: Int): Double {
+        if (peak <= 0 || peak >= s.size - 1)
+            return s.freq[peak]
+        val (p0, p1, p2) = Triple(s.power[peak - 1], s.power[peak], s.power[peak + 1])
+        if (!(p0 > 0 && p1 > 0 && p2 > 0))
+            return s.freq[peak]
+        val y0 = ln(p0)
+        val y1 = ln(p1)
+        val y2 = ln(p2)
+        val curvature = y0 - 2 * y1 + y2
+        if (!(curvature < 0))
+            return s.freq[peak]
+        val delta = (0.5 * (y0 - y2) / curvature).coerceIn(-0.5, 0.5)
+        return s.freq[peak] + delta * (s.freq[peak + 1] - s.freq[peak])
     }
 
     /** Frequency where power falls to `level` walking from `peak` in `dir`; linear interpolation between bins. */

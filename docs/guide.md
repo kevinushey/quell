@@ -129,6 +129,17 @@ absorber looks under-damped, over-damped, detuned low or high, or near
 optimal, with a sentence on what to change. Treat the diagnosis as a hint: it
 assumes a single lightly damped mode and a classic absorber.
 
+Against the reference's own peak frequency, the two split frequencies also
+give the absorber's natural frequency and its tuning ratio (absorber over
+structure), with the optimum to compare against. The optimum is the one for
+acceleration, 1/sqrt(1 + mu), since that is what the phone measures; the
+textbook Den Hartog 1/(1 + mu) is for displacement and sits a few percent
+lower. With the damper mass set on the run (taken as the moving mass), the
+card adds the spring stiffness, the mode's effective mass, and the mass on
+this spring (or the spring for this mass) that would tune it optimally. Tap
+tests whose taps beat get the same absorber frequency when a reference tap
+run without the absorber is chosen.
+
 ### Running a sweep
 
 A sweep is the methodical version: one parameter (mass, stiffness, position or

@@ -189,13 +189,124 @@ class DamperDspTest {
 
 class TuningTest {
 
+    private val fn = 25.0
+
+    /**
+     * Acceleration PSD of a structure (fn, zetaS) under force excitation,
+     * carrying an absorber with mass ratio mu, tuning r and damping zetaA
+     * (mu = 0: no absorber), sampled on a 1024-point grid at 419 Hz that is
+     * offset so no peak lands on a bin centre.
+     */
+    private fun absorberSpectrum(mu: Double, r: Double, zetaA: Double, zetaS: Double = 0.02): Spectrum {
+        val df = 419.0 / 1024
+        val f = DoubleArray((60 / df).toInt()) { 0.13 + it * df }
+        val p = DoubleArray(f.size) { i ->
+            val g = f[i] / fn
+            val x = if (mu == 0.0) {
+                1 / sqrt((1 - g * g) * (1 - g * g) + (2 * zetaS * g) * (2 * zetaS * g))
+            } else {
+                // x = d / (a d - b^2) for the two-mass system, normalized by the structure's stiffness.
+                val aRe = 1 + mu * r * r - g * g
+                val aIm = 2 * g * (zetaS + zetaA * mu * r)
+                val bRe = mu * r * r
+                val bIm = 2 * g * zetaA * mu * r
+                val dRe = mu * r * r - mu * g * g
+                val dIm = bIm
+                val denRe = aRe * dRe - aIm * dIm - (bRe * bRe - bIm * bIm)
+                val denIm = aRe * dIm + aIm * dRe - 2 * bRe * bIm
+                sqrt(dRe * dRe + dIm * dIm) / sqrt(denRe * denRe + denIm * denIm)
+            }
+            (x * g * g) * (x * g * g)
+        }
+        return Spectrum(f, p)
+    }
+
     @Test
-    fun denHartogOptimaMatchTextbookValues() {
-        // mu = 0.05: f ratio 0.952, zeta_opt = sqrt(3*0.05 / (8*1.05^3)) = 0.1273
-        assertEquals(0.9524, com.kevinushey.quell.dsp.Tuning.optimalTuningRatio(0.05), 1e-3)
+    fun optimaMatchTextbookValues() {
+        // mu = 0.05: equal acceleration peaks at 1/sqrt(1.05) = 0.976 (Den Hartog's displacement optimum is 0.952).
+        assertEquals(0.9759, com.kevinushey.quell.dsp.Tuning.optimalTuningRatio(0.05), 1e-3)
+        // zeta_opt = sqrt(3*0.05 / (8*1.05^3)) = 0.1273
         assertEquals(0.1273, com.kevinushey.quell.dsp.Tuning.optimalDampingRatio(0.05), 1e-3)
         // Baseline magnification 1/(2*0.02) = 25 -> 28 dB; optimum sqrt(1 + 40) = 6.4 -> 16.1 dB; reduction ~ -11.9 dB.
         assertEquals(-11.84, com.kevinushey.quell.dsp.Tuning.optimalReductionDb(0.05, 0.02), 0.05)
+    }
+
+    @Test
+    fun peakFrequenciesAreReadBetweenBins() {
+        // The baseline resonance sits at 25 Hz on a grid with bins at 24.68 and 25.09 Hz.
+        val peak = com.kevinushey.quell.dsp.Modal.dominantPeak(absorberSpectrum(0.0, 1.0, 0.0), 15.0, 35.0)!!
+        assertEquals(fn, peak.freq, 0.05)
+    }
+
+    @Test
+    fun theAbsorbersFrequencyMassAndSpringAreRecovered() {
+        // mu = 0.05 tuned 12% low (r = 0.86), lightly damped: a clear split, much like a first try with too much mass.
+        val mu = 0.05
+        val r = 0.86
+        val zetaA = 0.4 * com.kevinushey.quell.dsp.Tuning.optimalDampingRatio(mu)
+        val basePeak = com.kevinushey.quell.dsp.Modal.dominantPeak(absorberSpectrum(0.0, 1.0, 0.0), 15.0, 35.0)!!
+        val damped = absorberSpectrum(mu, r, zetaA)
+        val split = com.kevinushey.quell.dsp.Modal.splitPeak(damped, 15.0, 35.0)!!
+        val a = com.kevinushey.quell.dsp.Tuning.absorber(basePeak.freq, split.lower.freq, split.upper.freq, 0.030)!!
+        assertEquals(r * fn, a.freq, 0.015 * r * fn)
+        assertEquals(mu, a.massRatio, 0.15 * mu)
+        // 30 g as the moving mass: k = m (2 pi fa)^2 and the mode's mass m / mu.
+        assertEquals(0.030 * (2 * PI * a.freq) * (2 * PI * a.freq), a.stiffness, 1e-9)
+        assertEquals(0.030 / a.massRatio, a.modalMass, 1e-9)
+        // The suggested mass on this spring does tune it: sqrt(k / m) lands on fn / sqrt(1 + m / M), with fn as measured.
+        val measuredFn = a.freq / a.tuningRatio
+        val fAtOptimum = sqrt(a.stiffness / a.optimalMass) / (2 * PI)
+        assertEquals(measuredFn / sqrt(1 + a.optimalMass / a.modalMass), fAtOptimum, 1e-6)
+        assertTrue("tuned low wants less mass: ${a.optimalMass}", a.optimalMass < 0.030)
+        assertEquals(a.optimalTuningRatio * measuredFn, sqrt(a.optimalStiffness / 0.030) / (2 * PI), 1e-6)
+
+        // The diagnosis reads the same story from the peak heights and quotes the numbers.
+        val d = com.kevinushey.quell.dsp.Tuning.diagnose(basePeak, damped, 15.0, 35.0, split, 30.0)!!
+        assertEquals(com.kevinushey.quell.dsp.DampingVerdict.DETUNED_LOW, d.verdict)
+        assertTrue(d.advice, d.advice.contains("rings at about"))
+        assertEquals(a.massRatio, d.massRatio, 1e-12)
+    }
+
+    @Test
+    fun aWellTunedAbsorberIsNotCalledDetuned() {
+        // Equal acceleration peaks at 1/sqrt(1 + mu): with the old displacement target (1/(1 + mu)) the upper peak of a
+        // mu = 0.1 absorber stands about 6 dB taller and the 4 dB balance rule called it tuned low.
+        val mu = 0.1
+        val zetaA = 0.5 * com.kevinushey.quell.dsp.Tuning.optimalDampingRatio(mu)
+        val basePeak = com.kevinushey.quell.dsp.Modal.dominantPeak(absorberSpectrum(0.0, 1.0, 0.0), 15.0, 35.0)!!
+        val damped = absorberSpectrum(mu, com.kevinushey.quell.dsp.Tuning.optimalTuningRatio(mu), zetaA)
+        val split = com.kevinushey.quell.dsp.Modal.splitPeak(damped, 15.0, 35.0)!!
+        val d = com.kevinushey.quell.dsp.Tuning.diagnose(basePeak, damped, 15.0, 35.0, split)!!
+        // About -2 dB at half the optimal damping: well inside the 4 dB rule.
+        assertTrue("balance ${d.peakBalanceDb}", abs(d.peakBalanceDb) < 3)
+        assertTrue(d.verdict.toString(), d.verdict != com.kevinushey.quell.dsp.DampingVerdict.DETUNED_LOW && d.verdict != com.kevinushey.quell.dsp.DampingVerdict.DETUNED_HIGH)
+        assertEquals(1.0, d.absorber!!.tuningRatio / d.absorber!!.optimalTuningRatio, 0.015)
+    }
+
+    @Test
+    fun aSplitWithinTheSpectrumsNoiseGivesNoAbsorberEstimate() {
+        // The same clear split as above, then judged against a noisy spectrum (about 6 averages: 1.8 dB per bin).
+        val basePeak = com.kevinushey.quell.dsp.Modal.dominantPeak(absorberSpectrum(0.0, 1.0, 0.0), 15.0, 35.0)!!
+        val damped = absorberSpectrum(0.05, 0.86, 0.4 * com.kevinushey.quell.dsp.Tuning.optimalDampingRatio(0.05))
+        val split = com.kevinushey.quell.dsp.Modal.splitPeak(damped, 15.0, 35.0)!!
+        val notch = com.kevinushey.quell.dsp.Tuning.notchDepthDb(split)
+        val clear = com.kevinushey.quell.dsp.Tuning.diagnose(basePeak, damped, 15.0, 35.0, split, noiseDb = 1.3)!!
+        assertTrue("notch $notch", clear.absorber != null && clear.absorberWithheld == null)
+        // A noise level that makes this notch insignificant withholds the estimate, and says why.
+        val noisy = com.kevinushey.quell.dsp.Tuning.diagnose(basePeak, damped, 15.0, 35.0, split, noiseDb = notch / 2)!!
+        org.junit.Assert.assertNull(noisy.absorber)
+        assertTrue(noisy.absorberWithheld!!, noisy.absorberWithheld!!.contains("within this spectrum's noise"))
+    }
+
+    @Test
+    fun aBaselineFrequencyOutsideTheSplitGivesNoAbsorberEstimate() {
+        // A two-mass system always has fn between its two peaks; anything else is a different mode or a bad baseline.
+        org.junit.Assert.assertNull(com.kevinushey.quell.dsp.Tuning.absorber(30.0, 22.0, 28.0))
+        org.junit.Assert.assertNull(com.kevinushey.quell.dsp.Tuning.absorber(20.0, 22.0, 28.0))
+        // Without a damper mass the frequencies still come out; the spring and masses do not.
+        val a = com.kevinushey.quell.dsp.Tuning.absorber(25.0, 22.0, 28.0)!!
+        assertTrue(a.stiffness.isNaN() && a.modalMass.isNaN() && a.optimalMass.isNaN())
+        assertEquals(22.0 * 28.0 / 25.0, a.freq, 1e-12)
     }
 
     @Test
