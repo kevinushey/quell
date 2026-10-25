@@ -62,6 +62,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages = _messages.asSharedFlow()
 
+    /**
+     * The device recorder and a stopped run awaiting its save dialog. Held
+     * here rather than in the Record screen, so an activity recreation (a
+     * fold, a window resize) keeps both.
+     */
+    private val recorderLazy = lazy { com.kevinushey.quell.record.Recorder(app) }
+    val recorder by recorderLazy
+    private val _pendingRecording = MutableStateFlow<ParsedRun?>(null)
+    val pendingRecording: StateFlow<ParsedRun?> = _pendingRecording
+
+    fun setPendingRecording(run: ParsedRun?) {
+        _pendingRecording.value = run
+    }
+
+    override fun onCleared() {
+        // The listener would otherwise outlive the screen that started it.
+        if (recorderLazy.isInitialized())
+            recorder.discard()
+    }
+
     private val _busy = MutableStateFlow(0)
     val busy: StateFlow<Boolean> = _busy.map { it > 0 }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
@@ -198,12 +218,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * Persists a recording; false means it was not saved and the caller must keep it.
      * Inside a sweep the run joins it at `value`, and the sweep remembers the step.
      */
-    suspend fun addRecording(name: String, run: ParsedRun, sweep: Sweep? = null, value: Double? = null): Boolean = importMutex.withLock {
+    /** `trim`, when given, is the run's starting analysis window (seconds from its first sample). */
+    suspend fun addRecording(
+        name: String,
+        run: ParsedRun,
+        sweep: Sweep? = null,
+        value: Double? = null,
+        trim: ClosedFloatingPointRange<Double>? = null,
+    ): Boolean = importMutex.withLock {
         _busy.value++
         try {
             releaseMemoryForSave()
             repo.add(name, "Recorded on device", run) { meta ->
-                if (sweep == null) meta else joinSweep(meta, sweep, value)
+                val windowed = if (trim == null) meta else meta.copy(trimStart = trim.start, trimEnd = trim.endInclusive)
+                if (sweep == null) windowed else joinSweep(windowed, sweep, value)
             }
             // The run is safe from here on; a failed step bookkeeping must not read as a failed save.
             if (sweep != null && value != null) {

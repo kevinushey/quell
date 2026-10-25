@@ -93,6 +93,21 @@ class SweepAnalysisTest {
         val fromTen = SweepAnalysis.summarize(sweep, listOf(10.0, 30.0, 50.0).map { point(it, at(it)) })
         assertNull(fromTen.optimum)
         assertEquals(0.0, fromTen.nextValue!!, 0.0)
+        // With 0 g already repeated, the reading stops asking for another confirmation but still points at zero.
+        val repeated = SweepAnalysis.summarize(sweep, listOf(0.0, 0.0, 20.0, 40.0).map { point(it, at(it)) })
+        assertTrue(repeated.note, !repeated.note.contains("to confirm"))
+        assertEquals(0.0, repeated.nextValue!!, 0.0)
+    }
+
+    @Test
+    fun singleTapRunsAtThreeValuesGiveNoOptimum() {
+        // Each run has one clean tap, so no error; a parabola through three points fits exactly and would claim +/- 0.
+        val tap = sweep.copy(kind = ExperimentKind.TAP)
+        val pts = listOf(point(10.0, 0.020, error = Double.NaN), point(30.0, 0.035, error = Double.NaN), point(50.0, 0.025, error = Double.NaN))
+        val summary = SweepAnalysis.summarize(tap, pts)
+        assertNull(summary.optimum)
+        assertNull(summary.fit)
+        assertTrue(summary.note, summary.note.contains("two clean taps"))
     }
 
     @Test

@@ -222,6 +222,15 @@ object SweepAnalysis {
         val span = hi - lo
         val step = span / (distinct - 1)
         val best = if (minimize) pooled.minByOrNull { it.metric }!! else pooled.maxByOrNull { it.metric }!!
+        // No point carries an error (single-tap runs) and the parabola passes through all three: a zero sigma would
+        // only mean nothing measured the noise, so there is no optimum to report yet.
+        if (!(typicalError > 0) && distinct <= MIN_POINTS) {
+            return SweepSummary(
+                points, pooled, null, Double.NaN, null, Double.NaN,
+                "No run here has its own error estimate (a tap run needs at least two clean taps), and $distinct values fit the curve exactly, so nothing says how far to trust it. Repeat runs with more taps, or record one more value.",
+                suggest(sweep, if (best.value >= hi) hi + step else lo - step),
+            )
+        }
         val sigma = maxOf(fit.residualRms, typicalError)
         val spread = pooled.maxOf { it.metric } - pooled.minOf { it.metric }
         // Nothing to optimize yet when every value agrees within its error bars.
@@ -256,7 +265,12 @@ object SweepAnalysis {
         if (sweep.parameterNonNegative && x < 0) {
             // Always a value: with none, the screens fall back to continuing the last step, which may point away from zero.
             val next = suggest(sweep, x.coerceAtLeast(lo - span))!!
-            val tail = if (lo > 0) " Try %s.".format(Locale.US, unit.format(next)) else " Repeat a run at %s to confirm.".format(Locale.US, unit.format(next))
+            val tail = when {
+                lo > 0 -> " Try %s.".format(Locale.US, unit.format(next))
+                // Already confirmed once repeated; the suggestion stays at zero so the screens do not step away from it.
+                pooled.first().repeats >= 2 -> ""
+                else -> " Repeat a run at %s to confirm.".format(Locale.US, unit.format(next))
+            }
             return SweepSummary(
                 points, pooled, fit, sigma, null, Double.NaN,
                 "No optimum at a possible value: the curve's best point would be %s, below zero, so smaller is better all the way down to %s.%s".format(

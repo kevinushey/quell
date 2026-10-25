@@ -156,8 +156,10 @@ class SyncPlan(
             }
             // A run deleted on another phone (a folder tombstone) is kept here but never uploaded again.
             val bins = localIds.filter { it !in deletedIds && !complete("$it.bin", localBinSizes[it]) }
-            // A recorded copy that a pass was still writing when it died may be partial: written again.
-            val csvs = if (csv) localIds.filter { id -> id !in deletedIds && (state.csvNames[id]?.let { it !in remote || it in state.csvWriting } ?: true) } else emptyList()
+            // A run with any copy a pass was still writing when it died (under its recorded name or its current one)
+            // may have a partial file in the folder: its CSV is written again.
+            val unfinished = state.csvWriting.values.toSet()
+            val csvs = if (csv) localIds.filter { id -> id !in deletedIds && (id in unfinished || (state.csvNames[id]?.let { it !in remote } ?: true)) } else emptyList()
             val deletions = LinkedHashMap<String, List<String>>()
             for (id in deletedIds) {
                 if (id in local)

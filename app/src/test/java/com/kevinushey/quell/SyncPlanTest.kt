@@ -202,6 +202,10 @@ class SyncPlanTest {
         assertTrue(plan(listOf(id), r, state, indexIds = listOf(id), csv = true).csvToWrite.isEmpty())
         val cutShort = state.copy(csvWriting = mapOf("Run-0123abcd.csv" to id))
         assertEquals(listOf(id), plan(listOf(id), r, cutShort, indexIds = listOf(id), csv = true).csvToWrite)
+        // The unfinished copy is under the run's current name while the recorded one is another, complete file.
+        val renamed = remote("$id.bin", "Run-0123abcd.csv", "Fast-0123abcd.csv", "index.json", "sweeps.json")
+        val newName = state.copy(csvWriting = mapOf("Fast-0123abcd.csv" to id))
+        assertEquals(listOf(id), plan(listOf(id), renamed, newName, indexIds = listOf(id), csv = true).csvToWrite)
     }
 
     @Test

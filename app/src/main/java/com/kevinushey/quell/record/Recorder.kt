@@ -73,10 +73,18 @@ class Recorder(context: Context) : SensorEventListener {
         return ok
     }
 
+    /** Ends any capture without keeping it and returns to the idle state, for leaving the Record screen. */
+    fun discard() {
+        manager.unregisterListener(this)
+        releaseBuffers()
+        _status.value = RecorderStatus(sensorName = sensor?.name, sensorAvailable = sensor != null)
+    }
+
     /** Stops and returns the captured run, or null if nothing useful was captured. */
     fun stop(): ParsedRun? {
         manager.unregisterListener(this)
-        _status.value = _status.value.copy(recording = false)
+        // The limit flag has done its job once the capture is handed over; a recreated screen must not stop it again.
+        _status.value = _status.value.copy(recording = false, limitReached = false)
         // What survives the analysis limit is what gets offered for saving.
         val kept = if (count < 16) 0 else Resampler.analyzablePrefix(times.copyOf(count), maxSamples.toLong())
         if (kept < 16) {

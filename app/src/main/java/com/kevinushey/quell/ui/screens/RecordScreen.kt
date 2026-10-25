@@ -50,7 +50,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import com.kevinushey.quell.dsp.Channel
 import com.kevinushey.quell.dsp.Normalization
 import com.kevinushey.quell.dsp.WindowType
-import com.kevinushey.quell.record.Recorder
+import com.kevinushey.quell.record.StreamGaps
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.toMutableStateList
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import com.kevinushey.quell.ui.AnalysisEngine
 import com.kevinushey.quell.ui.MainViewModel
 import com.kevinushey.quell.ui.Resampled
@@ -70,28 +74,47 @@ import java.util.Locale
 @Composable
 fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
     val context = LocalContext.current
-    val recorder = remember { Recorder(context.applicationContext) }
+    val activity = context as? ComponentActivity
+    // The view model owns the capture, so recreating the activity mid-recording or mid-save loses nothing.
+    val recorder = vm.recorder
     val status by recorder.status.collectAsStateWithLifecycle()
     val sweeps by vm.sweeps.collectAsStateWithLifecycle()
     val datasets by vm.datasets.collectAsStateWithLifecycle()
     val sweep = sweepId?.let { id -> sweeps.firstOrNull { it.id == id } }
-    var pending by remember { mutableStateOf<ParsedRun?>(null) }
+    val pending by vm.pendingRecording.collectAsStateWithLifecycle()
     var liveSpectrum by remember { mutableStateOf<ChartSeries?>(null) }
     var kind by rememberSaveable { mutableStateOf(sweep?.kind ?: ExperimentKind.GENERAL) }
     val tapMode = kind == ExperimentKind.TAP
     // Antinode search: a tap test whose taps are grouped by location marks.
     var locating by rememberSaveable { mutableStateOf(false) }
-    val marks = remember { mutableStateListOf<Double>() }
+    val marks = rememberSaveable(saver = listSaver(save = { it.toList() }, restore = { it.toMutableStateList() })) { mutableStateListOf<Double>() }
     fun finished(run: ParsedRun): ParsedRun = run.copy(kind = kind, locationMarks = if (tapMode && locating) marks.toList() else emptyList())
     var liveTaps by remember { mutableStateOf<TapSummary?>(null) }
     var leaveRequested by remember { mutableStateOf(false) }
+    var wentToBackground by remember { mutableStateOf(false) }
     val settings by vm.analysis.collectAsStateWithLifecycle()
     val liveColor = MaterialTheme.colorScheme.primary
     val scope = rememberCoroutineScope()
 
-    // Last resort only (activity torn down); normal navigation is intercepted below.
+    // Leaving the screen ends the capture; a configuration change does not leave it. Normal navigation is intercepted below.
     DisposableEffect(Unit) {
-        onDispose { if (recorder.status.value.recording) recorder.stop() }
+        onDispose {
+            if (activity?.isChangingConfigurations != true) {
+                recorder.discard()
+                vm.setPendingRecording(null)
+            }
+        }
+    }
+
+    // Android stops the accelerometer for apps in the background; say so on return, not only when saving.
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
+        if (recorder.status.value.recording && activity?.isChangingConfigurations != true)
+            wentToBackground = true
+    }
+    LifecycleEventEffect(Lifecycle.Event.ON_START) {
+        if (wentToBackground && recorder.status.value.recording)
+            vm.message("Android may pause the accelerometer while Quell is in the background, so this recording may have a break. Any break is handled when you save.")
+        wentToBackground = false
     }
 
     // Leaving mid-recording would silently discard it; ask first.
@@ -109,7 +132,7 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
                         vm.message("Recording too short to keep")
                         onDone()
                     } else {
-                        pending = finished(run)
+                        vm.setPendingRecording(finished(run))
                     }
                 }) { Text("Stop and save") }
             },
@@ -126,8 +149,7 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
         )
     }
 
-    // Keep the screen awake and the sensor stream alive while recording.
-    val activity = context as? ComponentActivity
+    // Keep the screen awake while recording: the sensor stream stops once the screen is off or another app is in front.
     DisposableEffect(status.recording) {
         if (status.recording)
             activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -140,15 +162,13 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
     LaunchedEffect(status.limitReached) {
         if (status.limitReached && pending == null) {
             vm.message("Recording stopped at the ${formatCount(recorder.maxSamples)} sample limit")
-            pending = recorder.stop()?.let { finished(it) }
+            vm.setPendingRecording(recorder.stop()?.let { finished(it) })
         }
     }
 
     LaunchedEffect(status.recording, tapMode) {
         liveSpectrum = null
         liveTaps = null
-        if (status.recording)
-            marks.clear()
         // Finalized taps are kept; each pass analyzes only the capture since the last one.
         val tracker = TapTracker(settings.tapThreshold)
         while (status.recording) {
@@ -328,9 +348,12 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
                     if (run == null)
                         vm.message("Recording too short to keep")
                     else
-                        pending = finished(run)
-                } else if (!recorder.start()) {
-                    vm.message("Could not start the accelerometer")
+                        vm.setPendingRecording(finished(run))
+                } else {
+                    // Cleared here rather than when recording is seen to start, so a recreated screen keeps its marks.
+                    marks.clear()
+                    if (!recorder.start())
+                        vm.message("Could not start the accelerometer")
                 }
             },
             modifier = Modifier.fillMaxWidth().height(56.dp),
@@ -354,6 +377,10 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
             )
         }
         var saving by remember { mutableStateOf(false) }
+        val gaps = remember(run) { StreamGaps.find(run.series.time) }
+        // A break biases a spectrum, so drive and plain runs start on their longest unbroken stretch; tap runs keep
+        // every stretch, since their taps (and antinode locations) may sit on either side of a break.
+        val trim = gaps?.takeIf { run.kind != ExperimentKind.TAP }?.let { it.longestStart..it.longestEnd }
         AlertDialog(
             // The capture only exists here, so leaving requires an explicit choice.
             onDismissRequest = {},
@@ -361,6 +388,16 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("${formatCount(run.series.size)} samples over ${formatDuration(run.series.duration)}")
+                    if (gaps != null) {
+                        val what = "The sensor stopped for %.1f s in all (%d break%s), usually because the screen went off or another app was in front.".format(
+                            Locale.US, gaps.missingSec, gaps.count, if (gaps.count == 1) "" else "s",
+                        )
+                        val then = if (trim != null)
+                            " The analysis window is set to the longest unbroken stretch, %.1f-%.1f s; change it on the Data tab.".format(Locale.US, trim.start, trim.endInclusive)
+                        else
+                            " Taps during a break were not captured."
+                        Text(what + then, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
                     OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, singleLine = true)
                     if (sweep != null) {
                         OutlinedTextField(
@@ -379,17 +416,17 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
                 TextButton(enabled = !saving && valueValid, onClick = {
                     scope.launch {
                         saving = true
-                        val ok = vm.addRecording(name.ifBlank { recorder.suggestedName() }, run, sweep, value)
+                        val ok = vm.addRecording(name.ifBlank { recorder.suggestedName() }, run, sweep, value, trim)
                         saving = false
                         // On failure the dialog stays up with the recording intact, for a retry.
                         if (ok) {
-                            pending = null
+                            vm.setPendingRecording(null)
                             onDone()
                         }
                     }
                 }) { Text(if (saving) "Saving..." else "Save") }
             },
-            dismissButton = { TextButton(enabled = !saving, onClick = { pending = null }) { Text("Discard") } },
+            dismissButton = { TextButton(enabled = !saving, onClick = { vm.setPendingRecording(null) }) { Text("Discard") } },
         )
     }
 }
