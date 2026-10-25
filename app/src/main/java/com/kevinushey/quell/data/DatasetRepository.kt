@@ -209,8 +209,9 @@ class DatasetRepository(private val context: Context) {
     /**
      * Registers datasets whose .bin files are already in place (restored from
      * a mirror) and merges sweeps by id. Ids already present are skipped.
+     * Returns how many sweeps were new here.
      */
-    suspend fun adopt(metas: List<DatasetMeta>, sweeps: List<Sweep>) = withContext(Dispatchers.IO) {
+    suspend fun adopt(metas: List<DatasetMeta>, sweeps: List<Sweep>): Int = withContext(Dispatchers.IO) {
         mutex.withLock {
             loadLocked()
             val have = _datasets.value.map { it.id }.toSet()
@@ -218,13 +219,14 @@ class DatasetRepository(private val context: Context) {
             val haveSweeps = _sweeps.value.map { it.id }.toSet()
             val newSweeps = sweeps.filter { it.id !in haveSweeps }
             if (incoming.isEmpty() && newSweeps.isEmpty())
-                return@withLock
+                return@withLock 0
             val nextDatasets = _datasets.value + incoming
             val nextSweeps = _sweeps.value + newSweeps
             persistIndex(nextDatasets)
             _datasets.value = nextDatasets
             persistSweeps(nextSweeps)
             _sweeps.value = nextSweeps
+            newSweeps.size
         }
     }
 

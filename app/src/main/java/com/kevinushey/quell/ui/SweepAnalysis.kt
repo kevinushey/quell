@@ -252,6 +252,18 @@ object SweepAnalysis {
             )
         }
         val x = fit.extremum
+        // A mass or stiffness cannot go below zero: a vertex there means smaller is better as far as the range goes.
+        if (sweep.parameterNonNegative && x < 0) {
+            val next = if (lo > 0) suggest(sweep, x.coerceAtLeast(lo - span)) else null
+            val tail = if (next != null) " Try %s.".format(Locale.US, unit.format(next)) else ""
+            return SweepSummary(
+                points, pooled, fit, sigma, null, Double.NaN,
+                "No optimum at a possible value: the curve's best point would be %s, below zero, so smaller is better all the way down to %s.%s".format(
+                    Locale.US, unit.format(x), unit.format(lo), tail,
+                ),
+                next,
+            )
+        }
         val halfWidth = if (sigma > 0 && fit.a != 0.0) sqrt(sigma / abs(fit.a)) else Double.NaN
         val margin = 0.25 * span
         if (x < lo - margin || x > hi + margin) {

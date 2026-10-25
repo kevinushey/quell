@@ -50,7 +50,7 @@ data class SyncStatus(
 )
 
 /** What a restore did, for the caller to report. */
-data class RestoreResult(val restored: Int, val skipped: List<String>)
+data class RestoreResult(val restored: Int, val skipped: List<String>, val sweeps: Int = 0)
 
 /**
  * Mirrors the dataset store into a folder the user picked through the system
@@ -132,7 +132,11 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             val message = try {
                 val result = restore(tree)
                 buildString {
-                    append(if (result.restored == 0) "Nothing new in the folder" else "Restored ${result.restored} dataset${if (result.restored == 1) "" else "s"}")
+                    val parts = listOfNotNull(
+                        result.restored.takeIf { it > 0 }?.let { "$it dataset${if (it == 1) "" else "s"}" },
+                        result.sweeps.takeIf { it > 0 }?.let { "$it sweep${if (it == 1) "" else "s"}" },
+                    )
+                    append(if (parts.isEmpty()) "Nothing new in the folder" else "Restored ${parts.joinToString(" and ")}")
                     if (result.skipped.isNotEmpty())
                         append("; ${result.skipped.size} could not be read: ${result.skipped.joinToString()}")
                 }
@@ -219,7 +223,8 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         val remote = listChildren(tree)
         val metas = repo.datasets.value
         val localIds = metas.map { it.id }.toSet()
-        val state = SyncPlan.adoptCsvNames(loadState(), metas.associate { it.id to csvName(it) }, remote.keys)
+        val expectedCsv = metas.associate { it.id to csvName(it) }
+        val state = SyncPlan.adoptCsvNames(loadState(), expectedCsv, remote.keys)
 
         // The folder's index carries forward entries this phone does not have, unless they were deleted here.
         // A damaged index or sweep list is set aside once it has been seen damaged twice (so a neighbour's
@@ -251,6 +256,13 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         // Should it ever fail, bins and deletions still proceed; only the index writes are withheld.
         val indexWriteSafe = SyncPlan.indexWriteIsSafe(mergedIndex.map { it.id }, remoteIndex.map { it.id }, deleted)
 
+        // A CSV a cut-short pass left under a name this phone no longer writes would otherwise stay partial for good.
+        for (name in SyncPlan.staleCsvInFlight(state, expectedCsv)) {
+            val child = remote[name] ?: continue
+            if (runCatching { DocumentsContract.deleteDocument(context.contentResolver, child.uri) }.getOrDefault(false))
+                remote.remove(name)
+        }
+
         val localSizes = metas.associate { it.id to repo.datasetFile(it.id).length() }
         val plan = SyncPlan.plan(
             metas.map { it.id },
@@ -275,11 +287,12 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             writeDocument(tree, remote, "$id.bin", "application/octet-stream") { out -> local.inputStream().use { it.copyTo(out) } }
             mirrored.add(id)
         }
-        if (csv) {
+        if (csv && plan.csvToWrite.isNotEmpty()) {
+            // Recorded before streaming: should the pass die mid-file, the next one knows the copy may be partial.
+            saveState(seenAll.copy(csvInFlight = seenAll.csvInFlight + plan.csvToWrite.mapNotNull { id -> expectedCsv[id]?.let { id to it } }))
             for (id in plan.csvToWrite) {
-                val meta = metas.firstOrNull { it.id == id } ?: continue
                 val file = repo.datasetFile(id).takeIf { it.exists() } ?: continue
-                val name = csvName(meta)
+                val name = expectedCsv[id] ?: continue
                 // Streamed row by row from the .bin: a long run must not be loaded into the heap for this.
                 writeDocument(tree, remote, name, "text/csv") { out ->
                     out.bufferedWriter().use { w ->
@@ -332,6 +345,8 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                 badIndexHash = null,
                 badSweepsHash = null,
                 badTombstonesHash = null,
+                // Settled once written and recorded, or gone; a stale copy that would not delete stays flagged.
+                csvInFlight = state.csvInFlight.filter { (id, name) -> name in remote && csvNames[id] != name },
             )
         )
         if (settled.isNotEmpty())
@@ -450,6 +465,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             val skipped = ArrayList<String>()
             if (sweepsRead.items == null)
                 skipped.add("sweeps.json (damaged, sweeps not restored)")
+            var sweepsAdded = 0
             try {
                 for (meta in metas) {
                     if (meta.id in have || meta.id in deleted)
@@ -483,7 +499,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                 // Whatever was copied in is registered, even if the loop was cut short.
                 withContext(NonCancellable) {
                     if (incoming.isNotEmpty() || sweeps.isNotEmpty())
-                        repo.adopt(incoming, sweeps.filter { it.id !in deleted })
+                        sweepsAdded = repo.adopt(incoming, sweeps.filter { it.id !in deleted })
                     if (incoming.isNotEmpty()) {
                         val state = loadState()
                         saveState(state.copy(mirrored = state.mirrored + incoming.map { it.id }))
@@ -493,7 +509,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                         repo.indexRestored()
                 }
             }
-            return RestoreResult(incoming.size, skipped)
+            return RestoreResult(incoming.size, skipped, sweepsAdded)
     }
 
     private fun folderName(tree: Uri): String? {

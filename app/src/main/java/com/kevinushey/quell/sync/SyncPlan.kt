@@ -19,6 +19,8 @@ data class SyncState(
     val badIndexHash: String? = null,
     val badSweepsHash: String? = null,
     val badTombstonesHash: String? = null,
+    /** CSV copies a pass had started writing and not yet recorded, id to name: possibly partial, so never adopted. */
+    val csvInFlight: Map<String, String> = emptyMap(),
 )
 
 /** A file in the mirror folder: its size when the provider reports one, else -1. */
@@ -58,14 +60,24 @@ class SyncPlan(
          * than written a second time; the content is the same immutable .bin.
          * A file under the very name this phone would write is not adopted:
          * it may be this phone's own copy cut short, which the write repairs.
+         * Neither is a run whose CSV was in flight here, whatever its name.
          * [expectedNames] maps each local id to the name this phone would use.
          */
         fun adoptCsvNames(state: SyncState, expectedNames: Map<String, String>, remoteNames: Collection<String>): SyncState {
-            val found = expectedNames.filterKeys { it !in state.csvNames }.mapNotNull { (id, expected) ->
+            val found = expectedNames.filterKeys { it !in state.csvNames && it !in state.csvInFlight }.mapNotNull { (id, expected) ->
                 remoteNames.firstOrNull { it.endsWith("-${id.take(8)}.csv") && it != expected }?.let { id to it }
             }
             return if (found.isEmpty()) state else state.copy(csvNames = state.csvNames + found)
         }
+
+        /**
+         * In-flight CSVs under a name this phone will not write again for that
+         * run (renamed or deleted since): possibly partial and otherwise never
+         * replaced, so the pass removes them. Another phone that wrote the same
+         * name has it in its own record and writes it again.
+         */
+        fun staleCsvInFlight(state: SyncState, expectedNames: Map<String, String>): List<String> =
+            state.csvInFlight.filter { (id, name) -> name != expectedNames[id] && state.csvNames[id] != name }.values.toList()
 
         /**
          * Up to [maxAttempts] delayed passes after a transient folder failure,

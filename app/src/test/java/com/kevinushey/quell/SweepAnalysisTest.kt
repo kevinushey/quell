@@ -82,6 +82,20 @@ class SweepAnalysisTest {
     }
 
     @Test
+    fun aVertexBelowZeroIsNotReportedAsAnOptimum() {
+        // Convex fit 0.002 (m + 5)^2 - 10: lighter is better, with the vertex at -5 g just inside the range's margin.
+        fun at(m: Double) = 0.002 * (m + 5) * (m + 5) - 10
+        val fromZero = SweepAnalysis.summarize(sweep, listOf(0.0, 20.0, 40.0).map { point(it, at(it)) })
+        assertNull(fromZero.optimum)
+        assertTrue(fromZero.note, fromZero.note.contains("below zero"))
+        // 0 g was already tried, so there is nothing lighter left to suggest.
+        assertNull(fromZero.nextValue)
+        val fromTen = SweepAnalysis.summarize(sweep, listOf(10.0, 30.0, 50.0).map { point(it, at(it)) })
+        assertNull(fromTen.optimum)
+        assertEquals(0.0, fromTen.nextValue!!, 0.0)
+    }
+
+    @Test
     fun tapSweepsWithinTheirErrorBarsShowDampingToFourDecimals() {
         // Damping ratios of 0.020-0.023 at +/- 0.003: in the dB format both would read 0.0.
         val tap = sweep.copy(kind = ExperimentKind.TAP)

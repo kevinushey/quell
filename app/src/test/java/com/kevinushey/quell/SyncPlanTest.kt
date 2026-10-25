@@ -178,6 +178,19 @@ class SyncPlanTest {
     }
 
     @Test
+    fun aCsvCutShortAndThenRenamedIsRemovedNotAdopted() {
+        // A pass died writing "Run-0123abcd.csv"; the run has since been renamed, so this phone would now write "Fast-...".
+        val id = "0123abcd-0000-0000-0000-000000000000"
+        val expected = mapOf(id to "Fast-0123abcd.csv")
+        val r = remote("$id.bin", "Run-0123abcd.csv", "index.json", "sweeps.json")
+        val state = SyncState(mirrored = setOf(id), csvInFlight = mapOf(id to "Run-0123abcd.csv"))
+        assertEquals(state, SyncPlan.adoptCsvNames(state, expected, r.keys))
+        assertEquals(listOf("Run-0123abcd.csv"), SyncPlan.staleCsvInFlight(state, expected))
+        // Under the name this phone still writes, the copy is simply written again, not removed.
+        assertTrue(SyncPlan.staleCsvInFlight(state, mapOf(id to "Run-0123abcd.csv")).isEmpty())
+    }
+
+    @Test
     fun aTransientFailureGetsEveryRetryThenHandsOverToSyncNow() = kotlinx.coroutines.runBlocking {
         // Every pass still failing: all three run, then the caller is told to stop.
         var attempts = 0
