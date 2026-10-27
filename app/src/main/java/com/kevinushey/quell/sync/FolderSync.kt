@@ -60,8 +60,8 @@ data class RestoreResult(val restored: Int, val skipped: List<String>, val sweep
  * involved here. Runs while the app is open: that is when data changes.
  *
  * Everything in the folder is a standard format other tools can read: a CSV
- * of samples per run, runs.csv describing every run, and the app's JSON
- * index, sweeps and deletions, which restore reads.
+ * of samples per run headed by the run's details, runs.csv describing every
+ * run, and the app's JSON index, sweeps and deletions, which restore reads.
  *
  * The folder's index is a union: what this phone has plus what the folder
  * already listed, minus datasets the user deleted here. Only those explicit
@@ -256,6 +256,9 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         val tombstoneBytes = DatasetRepository.indexJson.encodeToString(deleted.sorted()).toByteArray(Charsets.UTF_8)
         val indexHash = sha1(indexBytes)
         val sweepsHash = sha1(sweepsBytes)
+        val sweepsById = mergedSweeps.associateBy { it.id }
+        val headers = metas.associate { it.id to MirrorCsv.header(it, it.sweepId?.let { s -> sweepsById[s] }) }
+        val headerHashes = headers.mapValues { sha1(it.value.toByteArray(Charsets.UTF_8)) }
 
         // Belt and braces: a merged index can only be shorter than the folder's by what was deleted here.
         // Should it ever fail, samples and deletions still proceed; only the index writes are withheld.
@@ -269,14 +272,15 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         }
 
         // What a recorded CSV listed with a size should measure, from this phone's own samples: computed once per
-        // run, as samples never change. A run whose size cannot be known here is never judged by it.
+        // run, as samples never change. A run whose size cannot be known here is never judged by it, and neither is
+        // a copy under a header other than the one measured with: that copy is refreshed whole anyway.
         val csvSizes = state.csvSizes.toMutableMap()
         for (meta in metas) {
             val listed = state.csvNames[meta.id]?.let { remote[it] } ?: continue
-            if (meta.id in csvSizes || listed.size < 0)
+            if (meta.id in csvSizes || listed.size < 0 || state.csvHeaders[meta.id] != headerHashes[meta.id])
                 continue
             val bin = repo.datasetFile(meta.id).takeIf { it.exists() } ?: continue
-            runCatching { MirrorCsv.writeSamples(bin, null) }.onSuccess { csvSizes[meta.id] = it }
+            runCatching { MirrorCsv.writeSamples(bin, headers.getValue(meta.id), null) }.onSuccess { csvSizes[meta.id] = it }
         }
 
         val plan = SyncPlan.plan(
@@ -285,6 +289,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             remoteIndex.map { it.id },
             deleted,
             SyncPlan.forPlanning(state.copy(csvSizes = csvSizes), expectedCsv),
+            headerHashes,
             indexHash,
             indexBytes.size.toLong(),
             sweepsHash,
@@ -293,21 +298,31 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
 
         val mirrored = state.mirrored.toMutableSet()
         val csvNames = state.csvNames.toMutableMap()
+        val csvHeaders = state.csvHeaders.toMutableMap()
         val csvWritten = HashSet<String>()
-        if (plan.csvToWrite.isNotEmpty()) {
+        // New or partial copies go under the name this phone writes; a refresh keeps the copy where it is.
+        val targets = plan.csvToWrite.mapNotNull { id -> expectedCsv[id]?.let { id to it } } +
+            plan.csvToRefresh.mapNotNull { id -> state.csvNames[id]?.let { id to it } }
+        if (targets.isNotEmpty()) {
             // Recorded before streaming: should the pass die mid-file, the next one knows the copy may be partial.
-            var progress = seenAll.copy(csvSizes = csvSizes, csvWriting = seenAll.csvWriting + plan.csvToWrite.mapNotNull { id -> expectedCsv[id]?.let { it to id } })
+            var progress = seenAll.copy(csvSizes = csvSizes, csvWriting = seenAll.csvWriting + targets.map { (id, name) -> name to id })
             saveState(progress)
-            for (id in plan.csvToWrite) {
+            for ((id, name) in targets) {
                 val file = repo.datasetFile(id).takeIf { it.exists() } ?: continue
-                val name = expectedCsv[id] ?: continue
+                val header = headerHashes.getValue(id)
                 var bytes = 0L
-                writeDocument(tree, remote, name, "text/csv") { out -> out.bufferedWriter().use { bytes = MirrorCsv.writeSamples(file, it) } }
+                writeDocument(tree, remote, name, "text/csv") { out -> out.bufferedWriter().use { bytes = MirrorCsv.writeSamples(file, headers.getValue(id), it) } }
                 csvNames[id] = name
                 csvSizes[id] = bytes
+                csvHeaders[id] = header
                 csvWritten.add(name)
                 // Saved per file, so a later failure in this pass does not send every CSV again on the next.
-                progress = progress.copy(csvNames = progress.csvNames + (id to name), csvSizes = progress.csvSizes + (id to bytes), csvWriting = progress.csvWriting - name)
+                progress = progress.copy(
+                    csvNames = progress.csvNames + (id to name),
+                    csvSizes = progress.csvSizes + (id to bytes),
+                    csvHeaders = progress.csvHeaders + (id to header),
+                    csvWriting = progress.csvWriting - name,
+                )
                 saveState(progress)
             }
         }
@@ -328,6 +343,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         for (id in released) {
             csvNames.remove(id)
             csvSizes.remove(id)
+            csvHeaders.remove(id)
         }
         // A local tombstone is forgotten only once the folder's own list carries it (read back on this pass, so a
         // neighbour's whole-file write cannot have dropped it unseen) and its files are gone.
@@ -370,6 +386,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                 mirrored = mirrored,
                 csvNames = csvNames,
                 csvSizes = csvSizes.filterKeys { it in csvNames },
+                csvHeaders = csvHeaders.filterKeys { it in csvNames },
                 indexHash = if (indexWriteSafe) indexHash else state.indexHash,
                 sweepsHash = if (indexWriteSafe) sweepsHash else state.sweepsHash,
                 runsHash = if (indexWriteSafe) runsHash else state.runsHash,
@@ -491,7 +508,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             val csvFiles = SyncPlan.csvFilesById(metas.map { it.id } + have + deleted, remote.keys)
             val incoming = ArrayList<DatasetMeta>()
             // CSVs read back whole here: this phone can vouch for them as a pass would for its own.
-            val verifiedCsv = HashMap<String, String>()
+            val verifiedCsv = HashMap<String, FetchedCsv>()
             val skipped = ArrayList<String>()
             if (sweepsRead.items == null)
                 skipped.add("sweeps.json (damaged, sweeps not restored)")
@@ -535,8 +552,16 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                         sweepsAdded = repo.adopt(incoming, sweeps.filter { it.id !in deleted })
                     if (incoming.isNotEmpty()) {
                         val state = loadState()
-                        val placed = incoming.map { it.id }.toSet()
-                        saveState(state.copy(mirrored = state.mirrored + placed, csvNames = state.csvNames + verifiedCsv.filterKeys { it in placed }))
+                        val placedIds = incoming.map { it.id }.toSet()
+                        val placed = verifiedCsv.filterKeys { it in placedIds }
+                        // The header read is recorded too: a copy already headed as this phone would head it is not rewritten.
+                        saveState(
+                            state.copy(
+                                mirrored = state.mirrored + placedIds,
+                                csvNames = state.csvNames + placed.mapValues { it.value.name },
+                                csvHeaders = state.csvHeaders + placed.mapValues { it.value.headerHash },
+                            )
+                        )
                     }
                     // A complete restore answers the lost-index warning; a partial one does not.
                     if (incoming.isNotEmpty() && skipped.isEmpty())
@@ -546,22 +571,25 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             return RestoreResult(incoming.size, skipped, sweepsAdded)
     }
 
+    /** A run's CSV a restore read back whole, with the fingerprint of the header it was found with. */
+    private class FetchedCsv(val name: String, val headerHash: String)
+
     /**
      * Places a run's samples from the folder in [tmp]: from the first of its
      * CSVs that reads back whole, else from an old-format .bin. Returns the
      * CSV used, or null when the .bin was.
      */
-    private fun fetchSamples(meta: DatasetMeta, csvs: List<String>, remote: Map<String, Child>, tmp: File): String? {
+    private fun fetchSamples(meta: DatasetMeta, csvs: List<String>, remote: Map<String, Child>, tmp: File): FetchedCsv? {
         var failure: Exception? = null
         for (name in csvs) {
             try {
                 // The index's count sizes the arrays, so it is bounded before anything is allocated.
                 if (meta.sampleCount > MemoryBudget.maxSamples())
                     throw IllegalStateException("holds ${meta.sampleCount} samples, more than this device can analyze (${MemoryBudget.maxSamples()})")
-                val series = context.contentResolver.openInputStream(remote.getValue(name).uri)?.reader()?.use { MirrorCsv.readSamples(it, meta.sampleCount) }
+                val samples = context.contentResolver.openInputStream(remote.getValue(name).uri)?.reader()?.use { MirrorCsv.readSamples(it, meta.sampleCount) }
                     ?: throw IllegalStateException("could not be read")
-                DatasetRepository.writeSeries(tmp, series)
-                return name
+                DatasetRepository.writeSeries(tmp, samples.series)
+                return FetchedCsv(name, sha1(samples.header.toByteArray(Charsets.UTF_8)))
             } catch (e: Exception) {
                 failure = failure ?: IllegalStateException("$name ${e.message ?: e.javaClass.simpleName}")
             }

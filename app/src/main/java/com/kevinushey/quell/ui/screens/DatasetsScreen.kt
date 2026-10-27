@@ -145,7 +145,7 @@ fun DatasetsScreen(vm: MainViewModel, onImport: () -> Unit, onRecord: () -> Unit
                                 RowAction.EXPORT -> scope.launch {
                                     val s = vm.series(meta.id)
                                     if (s != null)
-                                        runCatching { Exporter.shareRawCsv(context, meta, s) }.onFailure { vm.message("Export failed: ${it.message}") }
+                                        runCatching { Exporter.shareRawCsv(context, meta, vm.sweeps.value.firstOrNull { it.id == meta.sweepId }, s) }.onFailure { vm.message("Export failed: ${it.message}") }
                                 }
                                 RowAction.DELETE -> dialog = Dialog.Delete(meta)
                             }

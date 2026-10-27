@@ -53,7 +53,7 @@ fun SettingsScreen(vm: MainViewModel, onOpenGuide: () -> Unit) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("Cloud sync", style = MaterialTheme.typography.titleMedium)
         Text(
-            "Mirrors every recording, its details (notes, trim, damper mass) and your sweeps into a folder you choose. Pick a Google Drive, Dropbox or OneDrive folder and that app uploads the files; pick a local folder for a plain copy. Nothing is sent anywhere else. Each run is a CSV of time and x, y, z acceleration, and runs.csv lists every run, so spreadsheets and scripts can read the folder directly.",
+            "Mirrors every recording, its details (notes, trim, damper mass) and your sweeps into a folder you choose. Pick a Google Drive, Dropbox or OneDrive folder and that app uploads the files; pick a local folder for a plain copy. Nothing is sent anywhere else. Each run is a CSV of time and x, y, z acceleration, headed by its name, notes and other details as # comment lines, and runs.csv lists every run, so spreadsheets and scripts can read the folder directly.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

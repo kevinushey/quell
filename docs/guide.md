@@ -195,6 +195,13 @@ without the app:
   of its id: time in seconds and acceleration x, y, z in m/s^2, at full
   precision. The file keeps the name the run had when it was first written;
   renaming the run later does not rename it.
+- **The run's details head its CSV** as `#` comment lines: the same fields
+  as its runs.csv row (name, notes, analysis window, damper mass, sweep and
+  so on), so the file still says what it is when copied elsewhere. With the
+  leading `# ` removed the lines are YAML. Tell a CSV reader to skip them
+  with `pd.read_csv(path, comment="#")` in pandas or
+  `read.csv(path, comment.char = "#")` in R; spreadsheets show them as rows
+  above the column names. Editing a run's details uploads its CSV again.
 - **runs.csv**: one row per run, with its CSV file name, id, name, notes,
   kind, recording time, sample rate, duration, analysis window (trim_start_s
   and trim_end_s), damper mass, sweep and sweep value, and phone model. Start
@@ -204,9 +211,11 @@ without the app:
 
 Folders mirrored by older versions hold a .bin file per run instead. The app
 writes each run's CSV, and removes the .bin on the following sync once the
-CSV is confirmed in the folder. Update every phone that shares the folder:
-an older version puts the .bin files back, and cannot restore runs that only
-have a CSV.
+CSV is confirmed in the folder. CSVs written before they carried the run's
+details get them on the first sync after updating, which uploads each run's
+CSV once more. Update every phone that shares the folder: an older version
+puts the .bin files back, and cannot restore runs from CSVs that carry
+their details.
 
 ## A typical session
 

@@ -18,6 +18,11 @@ data class SyncState(
      * it, or cut it short), so a folder copy is judged by its listed size.
      */
     val csvSizes: Map<String, Long> = emptyMap(),
+    /**
+     * Fingerprint of the details header heading each run's CSV, as this phone
+     * last wrote or restored it. [csvSizes] describes the copy with this header.
+     */
+    val csvHeaders: Map<String, String> = emptyMap(),
     /** Content fingerprints of the last index.json, sweeps.json and runs.csv written. */
     val indexHash: String? = null,
     val sweepsHash: String? = null,
@@ -45,6 +50,11 @@ data class RemoteFile(val size: Long)
 class SyncPlan(
     /** Local runs whose samples CSV the folder lacks, or may hold only in part. */
     val csvToWrite: List<String>,
+    /**
+     * Local runs whose CSV is whole in the folder but headed by details that
+     * have changed since: written again in place, under the recorded name.
+     */
+    val csvToRefresh: List<String>,
     /** Remote files to delete, grouped by the dataset id they belong to: only datasets the user deleted here. */
     val deletions: Map<String, List<String>>,
     /** Local runs with an old .bin in the folder and their CSV listed at exactly the expected size: the CSV replaces the .bin. */
@@ -55,7 +65,7 @@ class SyncPlan(
     val notOnThisPhone: Set<String>,
 ) {
     val filesToDelete: List<String> get() = deletions.values.flatten()
-    val isEmpty: Boolean get() = csvToWrite.isEmpty() && deletions.isEmpty() && binsToRetire.isEmpty() && !writeIndex && !writeSweeps
+    val isEmpty: Boolean get() = csvToWrite.isEmpty() && csvToRefresh.isEmpty() && deletions.isEmpty() && binsToRetire.isEmpty() && !writeIndex && !writeSweeps
 
     /** What to do with a folder file that reads but does not decode. */
     enum class DamagedFile { ABORT_AND_REMEMBER, SET_ASIDE }
@@ -74,7 +84,8 @@ class SyncPlan(
          * A local run's CSV already in the folder under another name (another
          * phone's copy of a run a restore renamed here) is taken over by the
          * "-<id8>.csv" suffix FolderSync.csvName ends every name with, rather
-         * than written a second time; the samples behind it never change.
+         * than written a second time; the samples behind it never change, and
+         * a header this phone has no record of is refreshed in place.
          * A file under the very name this phone would write is not adopted:
          * it may be this phone's own copy cut short, which the write repairs.
          * Neither is a run whose CSV was in flight here, whatever its name.
@@ -192,7 +203,11 @@ class SyncPlan(
 
         /**
          * Samples never change, so one CSV per run is enough; a missing one, or
-         * one a pass may have cut short, is written again. Only datasets the
+         * one a pass may have cut short, is written again. The details header
+         * at its top does change: a whole copy whose header fingerprint is not
+         * the one [headers] gives for the run now is refreshed in place, so a
+         * renamed run keeps a single CSV. A run with no entry in [headers] is
+         * not judged by it. Only datasets the
          * user deleted on this phone are ever deleted from the folder: absence
          * from the local list proves nothing (the index may have failed to
          * load), so it is never read as a deletion. The folder's index is the
@@ -213,6 +228,7 @@ class SyncPlan(
             remoteIndexIds: List<String>,
             deletedIds: Set<String>,
             state: SyncState,
+            headers: Map<String, String>,
             indexHash: String,
             indexSize: Long,
             sweepsHash: String,
@@ -230,6 +246,10 @@ class SyncPlan(
                 val listed = listedCsv(id)
                 val expected = state.csvSizes[id]
                 id !in deletedIds && (listed == null || (expected != null && listed.size in 0 until expected))
+            }
+            val refresh = localIds.filter { id ->
+                val header = headers[id]
+                id !in deletedIds && id !in csvs && listedCsv(id) != null && header != null && header != state.csvHeaders[id]
             }
 
             val retire = localIds.filter { id ->
@@ -251,6 +271,7 @@ class SyncPlan(
             val elsewhere = remoteIndexIds.filter { it !in local && it !in deletedIds && ("$it.bin" in remote || it in csvFiles) }.toSet()
             return SyncPlan(
                 csvToWrite = csvs,
+                csvToRefresh = refresh,
                 deletions = deletions,
                 binsToRetire = retire,
                 writeIndex = needsWrite(remote["index.json"], indexHash, indexSize, state.indexHash),

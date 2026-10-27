@@ -26,15 +26,15 @@ class MirrorCsvTest {
         return TimeSeries(t, x, y, z)
     }
 
-    private fun samplesCsv(s: TimeSeries): String {
+    private fun samplesCsv(s: TimeSeries, header: String = ""): String {
         val bin = File.createTempFile("mirror", ".bin")
         try {
             DatasetRepository.writeSeries(bin, s)
             val out = StringWriter()
-            val bytes = MirrorCsv.writeSamples(bin, out)
+            val bytes = MirrorCsv.writeSamples(bin, header, out)
             // The length reported, and the one measured without writing, are what the folder's copy is judged by.
             assertEquals(out.toString().toByteArray(Charsets.UTF_8).size.toLong(), bytes)
-            assertEquals(bytes, MirrorCsv.writeSamples(bin, null))
+            assertEquals(bytes, MirrorCsv.writeSamples(bin, header, null))
             return out.toString()
         } finally {
             bin.delete()
@@ -44,7 +44,7 @@ class MirrorCsvTest {
     @Test
     fun samplesRoundTripExactly() {
         val s = awkwardSeries()
-        val back = MirrorCsv.readSamples(samplesCsv(s).reader(), s.size)
+        val back = MirrorCsv.readSamples(samplesCsv(s).reader(), s.size).series
         assertTrue(s.time.contentEquals(back.time))
         assertTrue(s.x.contentEquals(back.x))
         assertTrue(s.y.contentEquals(back.y))
@@ -60,7 +60,7 @@ class MirrorCsvTest {
             doubleArrayOf(0.0, Double.POSITIVE_INFINITY, 0.0),
             doubleArrayOf(0.0, 0.0, Double.NEGATIVE_INFINITY),
         )
-        val back = MirrorCsv.readSamples(samplesCsv(s).reader(), 3)
+        val back = MirrorCsv.readSamples(samplesCsv(s).reader(), 3).series
         assertTrue(back.x[0].isNaN())
         assertEquals(Double.POSITIVE_INFINITY, back.y[1], 0.0)
         assertEquals(Double.NEGATIVE_INFINITY, back.z[2], 0.0)
@@ -79,7 +79,7 @@ class MirrorCsvTest {
     fun windowsLineEndingsAndATrailingBlankLineAreAccepted() {
         val s = awkwardSeries(20)
         val text = samplesCsv(s).replace("\n", "\r\n") + "\r\n"
-        assertEquals(20, MirrorCsv.readSamples(text.reader(), 20).size)
+        assertEquals(20, MirrorCsv.readSamples(text.reader(), 20).series.size)
     }
 
     @Test
@@ -105,27 +105,30 @@ class MirrorCsvTest {
         assertThrows(IllegalStateException::class.java) { MirrorCsv.readSamples(garbled.reader(), 20) }
     }
 
+    private val sweep = Sweep(id = "s1", name = "Mass, round 2", parameter = SweepParameter.MASS, createdAtEpochMs = 0)
+
+    private val damped = DatasetMeta(
+        id = "0123abcd-0000-0000-0000-000000000000",
+        name = "Run 3",
+        sourceName = "Recorded on device",
+        importedAtEpochMs = 1_761_480_000_000,
+        sampleCount = 24000,
+        sampleRate = 400.0,
+        durationSec = 60.0,
+        colorIndex = 0,
+        notes = "With damper installed, \"soft\" spring\nsecond line",
+        deviceModel = "samsung SM-S911U",
+        recordedAt = "2026-10-26 09:00:00",
+        kind = ExperimentKind.DRIVE,
+        trimStart = 5.0,
+        damperMassGrams = 120.0,
+        sweepId = "s1",
+    )
+
+    private val bare = DatasetMeta("4567cdef-0000-0000-0000-000000000000", "Baseline", "baseline.zip", 0, 100, 200.0, 0.5, 1)
+
     @Test
     fun runsTableListsEveryRunWithItsDetails() {
-        val sweep = Sweep(id = "s1", name = "Mass, round 2", parameter = SweepParameter.MASS, createdAtEpochMs = 0)
-        val damped = DatasetMeta(
-            id = "0123abcd-0000-0000-0000-000000000000",
-            name = "Run 3",
-            sourceName = "Recorded on device",
-            importedAtEpochMs = 1_761_480_000_000,
-            sampleCount = 24000,
-            sampleRate = 400.0,
-            durationSec = 60.0,
-            colorIndex = 0,
-            notes = "With damper installed, \"soft\" spring\nsecond line",
-            deviceModel = "samsung SM-S911U",
-            recordedAt = "2026-10-26 09:00:00",
-            kind = ExperimentKind.DRIVE,
-            trimStart = 5.0,
-            damperMassGrams = 120.0,
-            sweepId = "s1",
-        )
-        val bare = DatasetMeta("4567cdef-0000-0000-0000-000000000000", "Baseline", "baseline.zip", 0, 100, 200.0, 0.5, 1)
         val table = MirrorCsv.runsTable(listOf(damped, bare), listOf(sweep), mapOf(damped.id to "Run 3-0123abcd.csv"))
 
         val expected = MirrorCsv.RUNS_COLUMNS.joinToString(",") + "\n" +
@@ -134,5 +137,104 @@ class MirrorCsvTest {
             "\"Mass, round 2\",mass,g,120.0,samsung SM-S911U,\n" +
             ",4567cdef-0000-0000-0000-000000000000,Baseline,,general,,1970-01-01T00:00:00Z,baseline.zip,100,200.0,0.5,0.0,0.5,,,,,,,\n"
         assertEquals(expected, table)
+    }
+
+    @Test
+    fun theHeaderRepeatsTheRunsRowAsYamlComments() {
+        val expected = """
+            # id: "0123abcd-0000-0000-0000-000000000000"
+            # name: "Run 3"
+            # notes: |-
+            #   With damper installed, "soft" spring
+            #   second line
+            # kind: "drive"
+            # recorded_at: "2026-10-26 09:00:00"
+            # imported_at: "2025-10-26T12:00:00Z"
+            # source: "Recorded on device"
+            # samples: 24000
+            # sample_rate_hz: 400.0
+            # duration_s: 60.0
+            # trim_start_s: 5.0
+            # trim_end_s: 60.0
+            # damper_mass_g: 120.0
+            # sweep: "Mass, round 2"
+            # sweep_parameter: "mass"
+            # sweep_unit: "g"
+            # sweep_value: 120.0
+            # device: "samsung SM-S911U"
+
+        """.trimIndent()
+        assertEquals(expected, MirrorCsv.header(damped, sweep))
+
+        // Empty values are left out rather than written as YAML nulls.
+        val bareHeader = MirrorCsv.header(bare, null)
+        assertTrue(bareHeader.lines().none { it.startsWith("# notes") || it.startsWith("# sweep") || it.startsWith("# device") })
+    }
+
+    @Test
+    fun textALiteralBlockCannotCarryIsQuotedAndEscaped() {
+        fun notesLine(notes: String) = MirrorCsv.header(bare.copy(notes = notes), null).lines().first { it.startsWith("# notes:") }
+
+        // Leading spaces would read as indentation, a trailing break as chomping: both are kept only by quoting.
+        assertEquals("# notes: \"  indented\\nsecond\"", notesLine("  indented\nsecond"))
+        assertEquals("# notes: \"ends\\nwith a break\\n\"", notesLine("ends\nwith a break\n"))
+        // A carriage return or NEL is a line break to some readers, and would end the comment line early.
+        assertEquals("# notes: \"one\\rtwo\"", notesLine("one\rtwo"))
+        assertEquals("# notes: \"one\\x85two\\u2028three\"", notesLine("one\u0085two\u2028three"))
+        assertEquals("# notes: \"tab\\there, \\\"quote\\\", back\\\\slash, bell\\x07\"", notesLine("tab\there, \"quote\", back\\slash, bell\u0007"))
+        // Printable text beyond ASCII is written as it is.
+        assertEquals("# notes: \"Ressort tr\u00e8s souple \ud83d\ude97\"", notesLine("Ressort tr\u00e8s souple \ud83d\ude97"))
+
+        // A literal block keeps blank lines and indented lines.
+        val block = MirrorCsv.header(bare.copy(notes = "Setup:\n\n  - phone on the rail\nend"), null)
+        assertTrue("# notes: |-\n#   Setup:\n#\n#     - phone on the rail\n#   end\n" in block)
+    }
+
+    @Test
+    fun largeNumbersCarryTheirExponentSign() {
+        // YAML 1.1 readers take 2.5E7 for a string; 2.5E+7 is a float to every reader. Small ones already carry "-".
+        val header = MirrorCsv.header(bare.copy(damperMassGrams = 2.5e7, trimStart = 5e-4), null)
+        assertTrue("# damper_mass_g: 2.5E+7\n" in header)
+        assertTrue("# trim_start_s: 5.0E-4\n" in header)
+    }
+
+    @Test
+    fun everyHeaderLineIsAComment() {
+        val awkward = damped.copy(name = "Two\nlines", notes = "a\r\nb\n\nc \u2029 d\u0000")
+        val header = MirrorCsv.header(awkward, sweep)
+        assertTrue(header.endsWith("\n"))
+        // Any of '\n', '\r', NEL, LS or PS could start a line some reader sees; each must start with '#'.
+        for (line in header.dropLast(1).split('\n', '\r', '\u0085', '\u2028', '\u2029'))
+            assertTrue(line, line.startsWith("#"))
+    }
+
+    @Test
+    fun aHeadedCsvReadsBackWithItsHeaderAndImportsByHand() {
+        val s = awkwardSeries(50)
+        val header = MirrorCsv.header(damped.copy(notes = "Tr\u00e8s souple\nsecond line"), sweep)
+        // samplesCsv checks the reported byte count against the UTF-8 the header encodes to.
+        val text = samplesCsv(s, header)
+        assertTrue(text.startsWith(header + MirrorCsv.SAMPLES_HEADER + "\n"))
+
+        val back = MirrorCsv.readSamples(text.reader(), s.size)
+        assertEquals(header, back.header)
+        assertTrue(s.x.contentEquals(back.series.x))
+        assertTrue(s.z.contentEquals(back.series.z))
+        // Windows line endings give the same header back, so the fingerprint restore records still matches.
+        assertEquals(header, MirrorCsv.readSamples(text.replace("\n", "\r\n").reader(), s.size).header)
+        // A copy from before headers reads back with none.
+        assertEquals("", MirrorCsv.readSamples(samplesCsv(s).reader(), s.size).header)
+
+        val imported = AccelerometerParser.parseCsvText(text)
+        assertEquals(s.size, imported.size)
+        assertTrue(s.y.contentEquals(imported.y))
+    }
+
+    @Test
+    fun aHeaderLongerThanAnyThisAppWritesIsRefused() {
+        val s = awkwardSeries(5)
+        val huge = "# notes: \"" + "x".repeat(80) + "\"\n"
+        val text = samplesCsv(s, huge.repeat(20_000))
+        assertThrows(IllegalStateException::class.java) { MirrorCsv.readSamples(text.reader(), 5) }
     }
 }

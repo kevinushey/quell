@@ -6,7 +6,9 @@ import android.graphics.Bitmap
 import androidx.core.content.FileProvider
 import com.kevinushey.quell.data.AnalysisSettings
 import com.kevinushey.quell.data.DatasetMeta
+import com.kevinushey.quell.data.Sweep
 import com.kevinushey.quell.data.TimeSeries
+import com.kevinushey.quell.sync.MirrorCsv
 import com.kevinushey.quell.ui.SpectrumResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -81,11 +83,12 @@ object Exporter {
 
     private fun csvNumber(v: Double): String = if (v.isFinite()) v.toString() else ""
 
-    /** Re-export a dataset's raw samples as CSV (useful for recordings made in-app). */
-    suspend fun shareRawCsv(context: Context, meta: DatasetMeta, series: TimeSeries) = withContext(Dispatchers.IO) {
+    /** Re-export a dataset's raw samples as CSV (useful for recordings made in-app), headed by its details as the mirror's copy is. */
+    suspend fun shareRawCsv(context: Context, meta: DatasetMeta, sweep: Sweep?, series: TimeSeries) = withContext(Dispatchers.IO) {
         val safe = meta.name.replace(Regex("[^A-Za-z0-9._ -]"), "_")
         val file = File(exportDir(context), "$safe.csv")
         file.bufferedWriter().use { w ->
+            w.write(MirrorCsv.header(meta, sweep))
             w.write("\"Time (s)\",\"Acceleration x (m/s^2)\",\"Acceleration y (m/s^2)\",\"Acceleration z (m/s^2)\",\"Absolute acceleration (m/s^2)\"\n")
             for (i in 0 until series.size) {
                 val x = series.x[i]

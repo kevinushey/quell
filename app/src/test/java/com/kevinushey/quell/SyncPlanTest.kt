@@ -24,7 +24,8 @@ class SyncPlanTest {
         sweepsHash: String = "s1",
         indexSize: Long = 100,
         sweepsSize: Long = 10,
-    ) = SyncPlan.plan(local, remote, indexIds, deleted, state, indexHash, indexSize, sweepsHash, sweepsSize)
+        headers: Map<String, String> = emptyMap(),
+    ) = SyncPlan.plan(local, remote, indexIds, deleted, state, headers, indexHash, indexSize, sweepsHash, sweepsSize)
 
     @Test
     fun firstPassWritesEverything() {
@@ -394,5 +395,62 @@ class SyncPlanTest {
         assertEquals(mapOf(a to "Theirs-0123abcd.csv", b to "Other-4567cdef.csv"), files)
         // A recorded name the folder no longer holds falls back to the suffix.
         assertEquals("Mine-0123abcd.csv", SyncPlan.runFiles(listOf(a), mapOf(a to "Gone-0123abcd.csv"), names, listOf(a))[a])
+    }
+
+    private val headed = measured.copy(csvHeaders = mapOf("a" to "h1"))
+
+    @Test
+    fun editedDetailsRefreshTheCsvInPlace() {
+        val r = remote("A-run.csv", "index.json", "sweeps.json", sizes = mapOf("A-run.csv" to 500L))
+        assertTrue(plan(listOf("a"), r, headed, indexIds = listOf("a"), headers = mapOf("a" to "h1")).isEmpty)
+
+        val edited = plan(listOf("a"), r, headed, indexIds = listOf("a"), headers = mapOf("a" to "h2"))
+        assertEquals(listOf("a"), edited.csvToRefresh)
+        assertTrue(edited.csvToWrite.isEmpty())
+        assertFalse(edited.isEmpty)
+    }
+
+    @Test
+    fun aCopyWithNoHeaderOnRecordIsRefreshedOnce() {
+        // Written before headers existed, or another phone's copy taken over unread: whole, but headed by who knows what.
+        val r = remote("A-run.csv", "index.json", "sweeps.json", sizes = mapOf("A-run.csv" to 500L))
+        assertEquals(listOf("a"), plan(listOf("a"), r, measured, indexIds = listOf("a"), headers = mapOf("a" to "h1")).csvToRefresh)
+        // A run the caller gave no header for is not judged by one.
+        assertTrue(plan(listOf("a"), r, measured, indexIds = listOf("a")).isEmpty)
+    }
+
+    @Test
+    fun aMissingOrPartialCopyIsWrittenNotRefreshed() {
+        val changed = mapOf("a" to "h2")
+        // Gone from the folder, listed short, or still in flight: a full write under this phone's name covers the header too.
+        val gone = plan(listOf("a"), remote("index.json", "sweeps.json"), headed, indexIds = listOf("a"), headers = changed)
+        val short = plan(listOf("a"), remote("A-run.csv", "index.json", "sweeps.json", sizes = mapOf("A-run.csv" to 499L)), headed, indexIds = listOf("a"), headers = changed)
+        val writing = plan(listOf("a"), remote("A-run.csv", "index.json", "sweeps.json"), headed.copy(csvWriting = mapOf("A-run.csv" to "a")), indexIds = listOf("a"), headers = changed)
+        for (p in listOf(gone, short, writing)) {
+            assertEquals(listOf("a"), p.csvToWrite)
+            assertTrue(p.csvToRefresh.isEmpty())
+        }
+        // A run deleted here or on another phone is neither.
+        val deleted = plan(listOf("a"), remote("A-run.csv", "index.json", "sweeps.json"), headed, indexIds = listOf("a"), deleted = setOf("a"), headers = changed)
+        assertTrue(deleted.csvToWrite.isEmpty())
+        assertTrue(deleted.csvToRefresh.isEmpty())
+    }
+
+    @Test
+    fun aWholeCopyBeingRefreshedStillRetiresItsBin() {
+        // The old .bin goes on the strength of the listed copy; the refresh is written before any .bin is removed.
+        val p = plan(listOf("a"), withCsv(500), headed, indexIds = listOf("a"), headers = mapOf("a" to "h2"))
+        assertEquals(listOf("a"), p.csvToRefresh)
+        assertEquals(listOf("a"), p.binsToRetire)
+    }
+
+    @Test
+    fun aRecordFromBeforeHeadersDecodes() {
+        val old = """
+            {"mirrored":["a"],"csvNames":{"a":"A-run.csv"},"csvSizes":{"a":500},"indexHash":"i1","sweepsHash":"s1",
+             "badIndexHash":null,"badSweepsHash":null,"badTombstonesHash":null,"csvWriting":{}}
+        """.trimIndent()
+        val state = Json { ignoreUnknownKeys = true }.decodeFromString<SyncState>(old)
+        assertEquals(measured, state)
     }
 }

@@ -68,8 +68,9 @@ search, tuning a damper with the Damper tab and sweeps, and keeping the data.
   Dropbox, OneDrive, local) and the app mirrors its recordings, their
   details and the sweeps into it a few seconds after each change; "Restore
   from folder" brings everything back on a new phone. The folder holds only
-  standard formats (a CSV of samples per run, a `runs.csv` table of every
-  run, and JSON), so other tools can read it directly.
+  standard formats (a CSV of samples per run, headed by the run's name,
+  notes and other details as `#` comment lines in YAML, a `runs.csv` table
+  of every run, and JSON), so other tools can read it directly.
 - Settings persist across launches; light/dark/dynamic color themes.
 
 ## Building
