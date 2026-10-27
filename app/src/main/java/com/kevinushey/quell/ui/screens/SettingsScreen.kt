@@ -53,7 +53,7 @@ fun SettingsScreen(vm: MainViewModel, onOpenGuide: () -> Unit) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("Cloud sync", style = MaterialTheme.typography.titleMedium)
         Text(
-            "Mirrors every recording, its settings and your sweeps into a folder you choose. Pick a Google Drive, Dropbox or OneDrive folder and that app uploads the files; pick a local folder for a plain copy. Nothing is sent anywhere else.",
+            "Mirrors every recording, its details (notes, trim, damper mass) and your sweeps into a folder you choose. Pick a Google Drive, Dropbox or OneDrive folder and that app uploads the files; pick a local folder for a plain copy. Nothing is sent anywhere else. Each run is a CSV of time and x, y, z acceleration, and runs.csv lists every run, so spreadsheets and scripts can read the folder directly.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -99,11 +99,6 @@ fun SettingsScreen(vm: MainViewModel, onOpenGuide: () -> Unit) {
             }
             SwitchRow("Mirror automatically", "Copies new and changed data a few seconds after each change while the app is open. Only runs you delete here are removed from the folder.", app.syncEnabled) { on ->
                 vm.updateAppSettings { it.copy(syncEnabled = on) }
-                if (on)
-                    vm.syncNow()
-            }
-            SwitchRow("Also write CSV copies", "One CSV per run next to the app's own files, for spreadsheets or other tools", app.syncCsv) { on ->
-                vm.updateAppSettings { it.copy(syncCsv = on) }
                 if (on)
                     vm.syncNow()
             }

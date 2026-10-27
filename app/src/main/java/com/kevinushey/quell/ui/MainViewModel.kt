@@ -420,7 +420,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun syncNow() {
         val app = _appSettings.value
         val tree = app.syncTreeUri?.takeIf { app.syncEnabled } ?: return
-        sync.requestSync(Uri.parse(tree), app.syncCsv)
+        sync.requestSync(Uri.parse(tree))
     }
 
     /** Pulls datasets and sweeps this phone lacks from the mirror folder; the outcome arrives as a message. */

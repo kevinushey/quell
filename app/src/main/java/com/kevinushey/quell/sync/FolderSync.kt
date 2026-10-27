@@ -6,6 +6,7 @@ import android.provider.DocumentsContract
 import android.util.AtomicFile
 import com.kevinushey.quell.data.DatasetMeta
 import com.kevinushey.quell.data.DatasetRepository
+import com.kevinushey.quell.data.MemoryBudget
 import com.kevinushey.quell.data.SettingsStore
 import com.kevinushey.quell.data.Sweep
 import kotlinx.coroutines.CancellationException
@@ -58,9 +59,14 @@ data class RestoreResult(val restored: Int, val skipped: List<String>, val sweep
  * provider). The provider does the uploading, so no account or API key is
  * involved here. Runs while the app is open: that is when data changes.
  *
+ * Everything in the folder is a standard format other tools can read: a CSV
+ * of samples per run, runs.csv describing every run, and the app's JSON
+ * index, sweeps and deletions, which restore reads.
+ *
  * The folder's index is a union: what this phone has plus what the folder
  * already listed, minus datasets the user deleted here. Only those explicit
- * deletions ever remove a file, so a phone whose own index failed to load
+ * deletions ever remove a run's samples (an old-format .bin goes once the
+ * run's CSV has replaced it), so a phone whose own index failed to load
  * cannot thin the folder out.
  */
 class FolderSync(private val context: Context, private val repo: DatasetRepository, private val settings: SettingsStore) {
@@ -92,11 +98,11 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         scope.launch {
             repo.load()
             // Only the sync fields matter here; an analysis-settings edit must not schedule a pass.
-            val syncSettings = settings.app.map { Triple(it.syncTreeUri, it.syncEnabled, it.syncCsv) }.distinctUntilChanged()
+            val syncSettings = settings.app.map { it.syncTreeUri to it.syncEnabled }.distinctUntilChanged()
             // Deletions change datasets or sweeps too, so deletedIds need not be an input of its own.
             combine(repo.datasets, repo.sweeps, syncSettings) { _, _, s -> s }
                 .debounce(3_000)
-                .collect { (treeUri, enabled, csv) ->
+                .collect { (treeUri, enabled) ->
                     // A pending retry belongs to the settings it was scheduled under.
                     retry?.cancel()
                     val tree = treeUri?.takeIf { enabled } ?: run {
@@ -106,7 +112,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                     }
                     // Nothing may end this loop, or the process: a bad grant is a status line, not a crash.
                     try {
-                        syncNow(Uri.parse(tree), csv)
+                        syncNow(Uri.parse(tree))
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -117,9 +123,9 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
     }
 
     /** "Sync now": runs on the long-lived scope, so backing out of the app does not cut it short. */
-    fun requestSync(tree: Uri, csv: Boolean) {
+    fun requestSync(tree: Uri) {
         val s = scope ?: return
-        s.launch { syncNow(tree, csv) }
+        s.launch { syncNow(tree) }
     }
 
     /** "Restore from folder": result arrives on [events]. A restore already under way is not queued twice. */
@@ -152,19 +158,19 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
     }
 
     /** One mirror pass; a transient folder failure gets a few more passes shortly after. */
-    suspend fun syncNow(tree: Uri, csv: Boolean) {
-        if (pass(tree, csv) != null)
+    suspend fun syncNow(tree: Uri) {
+        if (pass(tree) != null)
             scheduleRetry(tree)
     }
 
     /** The mirror pass itself: why it should run again soon, or null when it should not. */
-    private suspend fun pass(tree: Uri, csv: Boolean): String? = withContext(Dispatchers.IO) {
+    private suspend fun pass(tree: Uri): String? = withContext(Dispatchers.IO) {
         mutex.withLock {
             _status.update { it.copy(syncing = true) }
             try {
                 // The name lookup touches the grant too; a revoked folder must land in lastError like anything else.
                 _status.update { it.copy(folderName = folderName(tree)) }
-                val outcome = mirror(tree, csv)
+                val outcome = mirror(tree)
                 _status.update {
                     it.copy(
                         lastSyncEpochMs = System.currentTimeMillis(),
@@ -209,7 +215,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                 val app = settings.app.first()
                 if (!app.syncEnabled || app.syncTreeUri != tree.toString())
                     return@retryPasses false
-                reason = pass(tree, app.syncCsv)
+                reason = pass(tree)
                 reason != null
             }
             if (exhausted)
@@ -219,10 +225,9 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
 
     private class MirrorOutcome(val mirrored: Int, val notOnThisPhone: Int, val deletedElsewhere: Int)
 
-    private suspend fun mirror(tree: Uri, csv: Boolean): MirrorOutcome {
+    private suspend fun mirror(tree: Uri): MirrorOutcome {
         val remote = listChildren(tree)
         val metas = repo.datasets.value
-        val localIds = metas.map { it.id }.toSet()
         val expectedCsv = metas.associate { it.id to csvName(it) }
         val state = SyncPlan.adoptCsvNames(loadState(), expectedCsv, remote.keys)
 
@@ -253,7 +258,7 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         val sweepsHash = sha1(sweepsBytes)
 
         // Belt and braces: a merged index can only be shorter than the folder's by what was deleted here.
-        // Should it ever fail, bins and deletions still proceed; only the index writes are withheld.
+        // Should it ever fail, samples and deletions still proceed; only the index writes are withheld.
         val indexWriteSafe = SyncPlan.indexWriteIsSafe(mergedIndex.map { it.id }, remoteIndex.map { it.id }, deleted)
 
         // A CSV a cut-short pass left under a name this phone no longer writes would otherwise stay partial for good.
@@ -263,48 +268,52 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                 remote.remove(name)
         }
 
-        val localSizes = metas.associate { it.id to repo.datasetFile(it.id).length() }
+        // What a recorded CSV listed with a size should measure, from this phone's own samples: computed once per
+        // run, as samples never change. A run whose size cannot be known here is never judged by it.
+        val csvSizes = state.csvSizes.toMutableMap()
+        for (meta in metas) {
+            val listed = state.csvNames[meta.id]?.let { remote[it] } ?: continue
+            if (meta.id in csvSizes || listed.size < 0)
+                continue
+            val bin = repo.datasetFile(meta.id).takeIf { it.exists() } ?: continue
+            runCatching { MirrorCsv.writeSamples(bin, null) }.onSuccess { csvSizes[meta.id] = it }
+        }
+
         val plan = SyncPlan.plan(
             metas.map { it.id },
-            localSizes,
             remote.mapValues { RemoteFile(it.value.size) },
             remoteIndex.map { it.id },
             deleted,
-            SyncPlan.forPlanning(state, expectedCsv),
+            SyncPlan.forPlanning(state.copy(csvSizes = csvSizes), expectedCsv),
             indexHash,
             indexBytes.size.toLong(),
             sweepsHash,
             sweepsBytes.size.toLong(),
-            csv,
         )
 
         val mirrored = state.mirrored.toMutableSet()
         val csvNames = state.csvNames.toMutableMap()
-        for (id in plan.binsToWrite) {
-            val local = repo.datasetFile(id)
-            if (!local.exists())
-                continue
-            writeDocument(tree, remote, "$id.bin", "application/octet-stream") { out -> local.inputStream().use { it.copyTo(out) } }
-            mirrored.add(id)
-        }
         val csvWritten = HashSet<String>()
-        if (csv && plan.csvToWrite.isNotEmpty()) {
+        if (plan.csvToWrite.isNotEmpty()) {
             // Recorded before streaming: should the pass die mid-file, the next one knows the copy may be partial.
-            saveState(seenAll.copy(csvWriting = seenAll.csvWriting + plan.csvToWrite.mapNotNull { id -> expectedCsv[id]?.let { it to id } }))
+            var progress = seenAll.copy(csvSizes = csvSizes, csvWriting = seenAll.csvWriting + plan.csvToWrite.mapNotNull { id -> expectedCsv[id]?.let { it to id } })
+            saveState(progress)
             for (id in plan.csvToWrite) {
                 val file = repo.datasetFile(id).takeIf { it.exists() } ?: continue
                 val name = expectedCsv[id] ?: continue
-                // Streamed row by row from the .bin: a long run must not be loaded into the heap for this.
-                writeDocument(tree, remote, name, "text/csv") { out ->
-                    out.bufferedWriter().use { w ->
-                        w.write("\"Time (s)\",\"Acceleration x (m/s^2)\",\"Acceleration y (m/s^2)\",\"Acceleration z (m/s^2)\"\n")
-                        DatasetRepository.streamSeries(file) { t, x, y, z -> w.write("$t,$x,$y,$z\n") }
-                    }
-                }
+                var bytes = 0L
+                writeDocument(tree, remote, name, "text/csv") { out -> out.bufferedWriter().use { bytes = MirrorCsv.writeSamples(file, it) } }
                 csvNames[id] = name
+                csvSizes[id] = bytes
                 csvWritten.add(name)
+                // Saved per file, so a later failure in this pass does not send every CSV again on the next.
+                progress = progress.copy(csvNames = progress.csvNames + (id to name), csvSizes = progress.csvSizes + (id to bytes), csvWriting = progress.csvWriting - name)
+                saveState(progress)
             }
         }
+        // Settled once written through on this pass, or gone; anything else may still be partial.
+        val csvWriting = state.csvWriting.filterKeys { it in remote && it !in csvWritten }
+
         // A deletion is forgotten only once every file of that dataset has really gone.
         val released = HashSet<String>()
         for ((id, names) in plan.deletions) {
@@ -316,13 +325,21 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             }
         }
         mirrored.removeAll(released)
-        for (id in released)
+        for (id in released) {
             csvNames.remove(id)
+            csvSizes.remove(id)
+        }
         // A local tombstone is forgotten only once the folder's own list carries it (read back on this pass, so a
         // neighbour's whole-file write cannot have dropped it unseen) and its files are gone.
-        val settled = repo.deletedIds.value.filter { id ->
-            id in remoteTombstones && (id in released || ("$id.bin" !in remote && state.csvNames[id]?.let { it in remote } != true))
+        val settled = repo.deletedIds.value.filter { id -> id in remoteTombstones && (id in released || id !in plan.deletions) }
+
+        // Old-format copies go once the listing shows their run's CSV whole; one that will not delete is retried next pass.
+        for (id in plan.binsToRetire) {
+            val child = remote["$id.bin"] ?: continue
+            if (runCatching { DocumentsContract.deleteDocument(context.contentResolver, child.uri) }.getOrDefault(false))
+                remote.remove("$id.bin")
         }
+
         if (plan.writeIndex && indexWriteSafe)
             writeDocument(tree, remote, "index.json", "application/json") { it.write(indexBytes) }
         if (plan.writeSweeps && indexWriteSafe)
@@ -330,25 +347,33 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
         if (deleted != remoteTombstones || ("deleted.json" !in remote && deleted.isNotEmpty()))
             writeDocument(tree, remote, "deleted.json", "application/json") { it.write(tombstoneBytes) }
 
-        // Every local dataset with a complete remote .bin counts as mirrored, whoever wrote it; a run deleted
-        // on another phone is not mirrored by definition.
+        // runs.csv lists the folder's runs for other tools; it is built after this pass's writes, so it names what is there.
+        val runIds = mergedIndex.map { it.id }
+        val files = SyncPlan.runFiles(runIds, csvNames, remote.keys, runIds + deleted)
+        val runsBytes = MirrorCsv.runsTable(mergedIndex, mergedSweeps, files).toByteArray(Charsets.UTF_8)
+        val runsHash = sha1(runsBytes)
+        if (indexWriteSafe && SyncPlan.needsWrite(remote["runs.csv"]?.let { RemoteFile(it.size) }, runsHash, runsBytes.size.toLong(), state.runsHash))
+            writeDocument(tree, remote, "runs.csv", "text/csv") { it.write(runsBytes) }
+
+        // A local run is mirrored once its samples are complete in the folder, whoever wrote them: its CSV seen
+        // through, or an old .bin of the right size. A run deleted on another phone is not mirrored by definition.
         for (meta in metas) {
-            val r = remote["${meta.id}.bin"]
-            if (meta.id in plan.binsToWrite || (r != null && (r.size < 0 || r.size == localSizes[meta.id])))
+            val csv = csvNames[meta.id]
+            val bin = remote["${meta.id}.bin"]
+            val csvDone = csv != null && csv in remote && csv !in csvWriting
+            if (csvDone || (bin != null && (bin.size < 0 || bin.size == repo.datasetFile(meta.id).length())))
                 mirrored.add(meta.id)
         }
         mirrored.removeAll(remoteTombstones)
         saveState(
             SyncState(
-                mirrored,
-                csvNames,
-                if (indexWriteSafe) indexHash else state.indexHash,
-                if (indexWriteSafe) sweepsHash else state.sweepsHash,
-                badIndexHash = null,
-                badSweepsHash = null,
-                badTombstonesHash = null,
-                // Settled once written through on this pass, or gone; anything else may still be partial.
-                csvWriting = state.csvWriting.filterKeys { it in remote && it !in csvWritten },
+                mirrored = mirrored,
+                csvNames = csvNames,
+                csvSizes = csvSizes.filterKeys { it in csvNames },
+                indexHash = if (indexWriteSafe) indexHash else state.indexHash,
+                sweepsHash = if (indexWriteSafe) sweepsHash else state.sweepsHash,
+                runsHash = if (indexWriteSafe) runsHash else state.runsHash,
+                csvWriting = csvWriting,
             )
         )
         if (settled.isNotEmpty())
@@ -463,25 +488,31 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
             val tombstones = readRemoteTombstones(remote).items
                 ?: throw IllegalStateException("The folder's deleted.json is damaged (not valid JSON); restore would not know what was deleted. With mirroring on it is set aside after two passes, or fix it by hand.")
             val deleted = repo.deletedIds.value + tombstones
+            val csvFiles = SyncPlan.csvFilesById(metas.map { it.id } + have + deleted, remote.keys)
             val incoming = ArrayList<DatasetMeta>()
+            // CSVs read back whole here: this phone can vouch for them as a pass would for its own.
+            val verifiedCsv = HashMap<String, String>()
             val skipped = ArrayList<String>()
             if (sweepsRead.items == null)
                 skipped.add("sweeps.json (damaged, sweeps not restored)")
             var sweepsAdded = 0
+            // A CSV is parsed into the heap, so cached samples make room first; they reload on demand.
+            repo.releaseSamples()
             try {
                 for (meta in metas) {
                     if (meta.id in have || meta.id in deleted)
                         continue
-                    val remoteBin = remote["${meta.id}.bin"] ?: continue
+                    // The name this phone would write comes first; under a shared id prefix it is the only one tried.
+                    val csvs = (listOfNotNull(csvName(meta).takeIf { it in remote }) + csvFiles[meta.id].orEmpty()).distinct()
+                    if (csvs.isEmpty() && "${meta.id}.bin" !in remote)
+                        continue
                     val target = repo.datasetFile(meta.id)
                     val tmp = File(target.path + ".restore")
                     try {
-                        // A lost index leaves the files behind; one that is intact (and the size the folder reports) needs no download.
-                        val onDisk = target.exists() && runCatching { DatasetRepository.validateSeriesFile(target) }.isSuccess &&
-                            (remoteBin.size < 0 || remoteBin.size == target.length())
+                        // A lost index leaves the samples behind; ones that are intact and as long as the index says need no download.
+                        val onDisk = target.exists() && runCatching { DatasetRepository.validateSeriesFile(target) == meta.sampleCount }.getOrDefault(false)
                         if (!onDisk) {
-                            context.contentResolver.openInputStream(remoteBin.uri)?.use { input -> tmp.outputStream().use { input.copyTo(it) } }
-                                ?: throw IllegalStateException("could not be read")
+                            fetchSamples(meta, csvs, remote, tmp)?.let { verifiedCsv[meta.id] = it }
                             // Refuse a truncated, foreign or oversized file before it becomes a dataset.
                             DatasetRepository.validateSeriesFile(tmp)
                             if (!tmp.renameTo(target))
@@ -504,7 +535,8 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                         sweepsAdded = repo.adopt(incoming, sweeps.filter { it.id !in deleted })
                     if (incoming.isNotEmpty()) {
                         val state = loadState()
-                        saveState(state.copy(mirrored = state.mirrored + incoming.map { it.id }))
+                        val placed = incoming.map { it.id }.toSet()
+                        saveState(state.copy(mirrored = state.mirrored + placed, csvNames = state.csvNames + verifiedCsv.filterKeys { it in placed }))
                     }
                     // A complete restore answers the lost-index warning; a partial one does not.
                     if (incoming.isNotEmpty() && skipped.isEmpty())
@@ -512,6 +544,33 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
                 }
             }
             return RestoreResult(incoming.size, skipped, sweepsAdded)
+    }
+
+    /**
+     * Places a run's samples from the folder in [tmp]: from the first of its
+     * CSVs that reads back whole, else from an old-format .bin. Returns the
+     * CSV used, or null when the .bin was.
+     */
+    private fun fetchSamples(meta: DatasetMeta, csvs: List<String>, remote: Map<String, Child>, tmp: File): String? {
+        var failure: Exception? = null
+        for (name in csvs) {
+            try {
+                // The index's count sizes the arrays, so it is bounded before anything is allocated.
+                if (meta.sampleCount > MemoryBudget.maxSamples())
+                    throw IllegalStateException("holds ${meta.sampleCount} samples, more than this device can analyze (${MemoryBudget.maxSamples()})")
+                val series = context.contentResolver.openInputStream(remote.getValue(name).uri)?.reader()?.use { MirrorCsv.readSamples(it, meta.sampleCount) }
+                    ?: throw IllegalStateException("could not be read")
+                DatasetRepository.writeSeries(tmp, series)
+                return name
+            } catch (e: Exception) {
+                failure = failure ?: IllegalStateException("$name ${e.message ?: e.javaClass.simpleName}")
+            }
+        }
+
+        val bin = remote["${meta.id}.bin"] ?: throw failure ?: IllegalStateException("has no samples in the folder")
+        context.contentResolver.openInputStream(bin.uri)?.use { input -> tmp.outputStream().use { input.copyTo(it) } }
+            ?: throw IllegalStateException("could not be read")
+        return null
     }
 
     private fun folderName(tree: Uri): String? {
@@ -563,7 +622,8 @@ class FolderSync(private val context: Context, private val repo: DatasetReposito
      * Overwrites an existing child of that name or creates it. A document
      * created here is removed again if its body fails, so a half-written file
      * never passes for a mirror; a copy cut short by process death is caught
-     * by the size check on the next pass.
+     * on the next pass, by the size check for the files the pass regenerates
+     * and by the in-flight record (csvWriting) for a run's CSV.
      */
     private fun writeDocument(tree: Uri, remote: MutableMap<String, Child>, name: String, mime: String, body: (java.io.OutputStream) -> Unit) {
         val existing = remote[name]?.uri

@@ -203,7 +203,7 @@ class DatasetRepository(private val context: Context) {
         }
     }
 
-    /** Where a dataset's samples live; the sync mirror copies these files as they are. */
+    /** Where a dataset's samples live; the sync mirror writes each one out as a CSV. */
     fun datasetFile(id: String): File = File(dir, "$id.bin")
 
     /**
@@ -514,11 +514,13 @@ class DatasetRepository(private val context: Context) {
          * Checks the header, that the file holds exactly the samples it
          * announces, and that this device can hold them: a run recorded on a
          * larger phone must be refused here, not at the first analysis.
+         * Returns the sample count.
          */
-        fun validateSeriesFile(file: File) {
+        fun validateSeriesFile(file: File): Int {
             val n = checkedSampleCount(file)
             if (n > MemoryBudget.maxSamples())
                 throw IllegalStateException("${file.name} holds $n samples, more than this device can analyze (${MemoryBudget.maxSamples()})")
+            return n
         }
 
         /** The header's sample count, once the magic and the exact file length agree with it. */

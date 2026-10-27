@@ -74,6 +74,4 @@ data class AppSettings(
     /** Folder (document tree uri) the dataset store is mirrored into, and whether to. */
     val syncTreeUri: String? = null,
     val syncEnabled: Boolean = false,
-    /** Also keep a CSV copy of every run in the folder, for use outside the app. */
-    val syncCsv: Boolean = false,
 )

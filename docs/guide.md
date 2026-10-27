@@ -181,12 +181,32 @@ Everything lives in the app's private storage until you say otherwise.
 
 - **Cloud sync** (Settings): choose a folder in Google Drive, Dropbox,
   OneDrive or local storage through the system picker. The app mirrors every
-  recording, its settings and the sweeps into it a few seconds after each
-  change while it is open, optionally with a CSV per run. "Restore from
-  folder" brings everything back on a new phone and never overwrites a
-  folder's own data before it has been restored.
+  recording, its details and the sweeps into it a few seconds after each
+  change while it is open. "Restore from folder" brings everything back on a
+  new phone and never overwrites a folder's own data before it has been
+  restored.
 - **Export**: raw samples per run, spectra as a wide CSV, sweep tables, and
   any chart as a PNG through the share sheet.
+
+The sync folder is plain data that spreadsheets and scripts can read
+without the app:
+
+- **One CSV per run**, named after the run plus the first eight characters
+  of its id: time in seconds and acceleration x, y, z in m/s^2, at full
+  precision. The file keeps the name the run had when it was first written;
+  renaming the run later does not rename it.
+- **runs.csv**: one row per run, with its CSV file name, id, name, notes,
+  kind, recording time, sample rate, duration, analysis window (trim_start_s
+  and trim_end_s), damper mass, sweep and sweep value, and phone model. Start
+  here and read each run's CSV from the file column.
+- **index.json, sweeps.json, deleted.json**: the app's own record of runs,
+  sweeps and deletions, which restore reads.
+
+Folders mirrored by older versions hold a .bin file per run instead. The app
+writes each run's CSV, and removes the .bin on the following sync once the
+CSV is confirmed in the folder. Update every phone that shares the folder:
+an older version puts the .bin files back, and cannot restore runs that only
+have a CSV.
 
 ## A typical session
 

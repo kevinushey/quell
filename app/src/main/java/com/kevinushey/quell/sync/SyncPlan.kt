@@ -8,13 +8,20 @@ import kotlinx.serialization.Serializable
 /** What the mirror folder already holds, as written by this app. */
 @Serializable
 data class SyncState(
-    /** Dataset ids whose .bin (and, if enabled, .csv) this app has written to the folder. */
+    /** Dataset ids whose samples this app has seen complete in the folder. */
     val mirrored: Set<String> = emptySet(),
-    /** Dataset ids with a CSV copy in the folder, and the file name used. */
+    /** Dataset ids with a samples CSV in the folder, and the file name used. */
     val csvNames: Map<String, String> = emptyMap(),
-    /** Content fingerprints of the last index.json and sweeps.json written. */
+    /**
+     * The byte length of each run's CSV as this phone writes it. A name in
+     * [csvNames] proves nothing about content (another phone may have written
+     * it, or cut it short), so a folder copy is judged by its listed size.
+     */
+    val csvSizes: Map<String, Long> = emptyMap(),
+    /** Content fingerprints of the last index.json, sweeps.json and runs.csv written. */
     val indexHash: String? = null,
     val sweepsHash: String? = null,
+    val runsHash: String? = null,
     /** Fingerprints of an undecodable index.json / sweeps.json seen on the previous pass; seen twice, it is set aside. */
     val badIndexHash: String? = null,
     val badSweepsHash: String? = null,
@@ -30,19 +37,25 @@ data class SyncState(
 /** A file in the mirror folder: its size when the provider reports one, else -1. */
 data class RemoteFile(val size: Long)
 
-/** The work one sync pass has to do; pure so it can be tested without a ContentResolver. */
+/**
+ * The work one sync pass has to do; pure so it can be tested without a ContentResolver.
+ * Each run's samples go to the folder as a CSV; folders from before that hold
+ * a "<id>.bin" per run instead, which goes once the run's CSV is complete.
+ */
 class SyncPlan(
-    val binsToWrite: List<String>,
+    /** Local runs whose samples CSV the folder lacks, or may hold only in part. */
     val csvToWrite: List<String>,
     /** Remote files to delete, grouped by the dataset id they belong to: only datasets the user deleted here. */
     val deletions: Map<String, List<String>>,
+    /** Local runs with an old .bin in the folder and their CSV listed at exactly the expected size: the CSV replaces the .bin. */
+    val binsToRetire: List<String>,
     val writeIndex: Boolean,
     val writeSweeps: Boolean,
     /** Datasets the folder's index lists that are not on this phone (and were not deleted here): a restore would bring them in. */
     val notOnThisPhone: Set<String>,
 ) {
     val filesToDelete: List<String> get() = deletions.values.flatten()
-    val isEmpty: Boolean get() = binsToWrite.isEmpty() && csvToWrite.isEmpty() && deletions.isEmpty() && !writeIndex && !writeSweeps
+    val isEmpty: Boolean get() = csvToWrite.isEmpty() && deletions.isEmpty() && binsToRetire.isEmpty() && !writeIndex && !writeSweeps
 
     /** What to do with a folder file that reads but does not decode. */
     enum class DamagedFile { ABORT_AND_REMEMBER, SET_ASIDE }
@@ -61,7 +74,7 @@ class SyncPlan(
          * A local run's CSV already in the folder under another name (another
          * phone's copy of a run a restore renamed here) is taken over by the
          * "-<id8>.csv" suffix FolderSync.csvName ends every name with, rather
-         * than written a second time; the content is the same immutable .bin.
+         * than written a second time; the samples behind it never change.
          * A file under the very name this phone would write is not adopted:
          * it may be this phone's own copy cut short, which the write repairs.
          * Neither is a run whose CSV was in flight here, whatever its name.
@@ -76,13 +89,55 @@ class SyncPlan(
         }
 
         /**
+         * The folder's samples CSVs by run id, names sorted. A name ending in a
+         * run's "-<id8>.csv" suffix is that run's, unless another known run
+         * shares those eight characters and the name could be either's.
+         */
+        fun csvFilesById(knownIds: Collection<String>, remoteNames: Collection<String>): Map<String, List<String>> {
+            val owners = knownIds.toSet().groupBy { it.take(8) }
+            val out = LinkedHashMap<String, MutableList<String>>()
+            for (name in remoteNames.sorted()) {
+                val match = CSV_NAME.matchEntire(name) ?: continue
+                val owner = owners[match.groupValues[1]]?.singleOrNull() ?: continue
+                out.getOrPut(owner) { ArrayList() }.add(name)
+            }
+            return out
+        }
+
+        private val CSV_NAME = Regex(".*-([0-9a-fA-F]{8})\\.csv")
+
+        /**
+         * Each listed run's samples CSV, for runs.csv: the name this phone
+         * recorded, else the one its suffix points to (another phone's copy).
+         */
+        fun runFiles(runIds: List<String>, csvNames: Map<String, String>, remoteNames: Collection<String>, knownIds: Collection<String>): Map<String, String> {
+            val byId = csvFilesById(knownIds, remoteNames)
+            val present = remoteNames.toSet()
+            val out = LinkedHashMap<String, String>()
+            for (id in runIds) {
+                val file = csvNames[id]?.takeIf { it in present } ?: byId[id]?.firstOrNull() ?: continue
+                out[id] = file
+            }
+            return out
+        }
+
+        /** A folder file the pass regenerates is written when its content changed, or the folder's copy is missing or the wrong size. */
+        fun needsWrite(existing: RemoteFile?, hash: String, size: Long, lastHash: String?): Boolean {
+            if (existing == null)
+                return true
+            return hash != lastHash || (existing.size >= 0 && existing.size != size)
+        }
+
+        /**
          * Unfinished CSVs under a name this phone will not write again for that
-         * run (renamed or deleted since): possibly partial and otherwise never
-         * replaced, so the pass removes them. Another phone that wrote the same
-         * name has it in its own record and writes it again.
+         * run (renamed since): possibly partial and otherwise never replaced,
+         * so the pass removes them. Another phone that wrote the same name has
+         * it in its own record and writes it again. A run missing from the
+         * local list is left alone: absence proves nothing, and the file may
+         * be the folder's only copy. A run deleted here loses its files anyway.
          */
         fun staleCsvWrites(state: SyncState, expectedNames: Map<String, String>): List<String> =
-            state.csvWriting.filter { (name, id) -> name != expectedNames[id] }.keys.toList()
+            state.csvWriting.filter { (name, id) -> id in expectedNames && name != expectedNames[id] }.keys.toList()
 
         /**
          * The state to plan from: unfinished entries under a name the run no
@@ -110,7 +165,7 @@ class SyncPlan(
         /**
          * The folder's index is a union: this phone's entries, then every entry
          * the folder already listed that is neither here nor deleted here. An
-         * entry whose .bin is missing from the folder is carried too; restore
+         * entry whose samples are missing from the folder is carried too; restore
          * skips it and the status does not count it, but dropping it would
          * forget a dataset that may still be on its way.
          */
@@ -136,18 +191,24 @@ class SyncPlan(
         }
 
         /**
-         * Bins are immutable, so one copy per id is enough; a missing remote
-         * file, or one whose size disagrees with the local file (a copy cut
-         * short), is written again. Only datasets the user deleted on this
-         * phone are ever deleted from the folder: absence from the local list
-         * proves nothing (the index may have failed to load), so it is never
-         * read as a deletion. The folder's index is the union of what is here
-         * and what the folder already listed, minus those deletions, so a
-         * phone that lost entries, or a second phone, cannot thin it out.
+         * Samples never change, so one CSV per run is enough; a missing one, or
+         * one a pass may have cut short, is written again. Only datasets the
+         * user deleted on this phone are ever deleted from the folder: absence
+         * from the local list proves nothing (the index may have failed to
+         * load), so it is never read as a deletion. The folder's index is the
+         * union of what is here and what the folder already listed, minus
+         * those deletions, so a phone that lost entries, or a second phone,
+         * cannot thin it out.
+         *
+         * A recorded CSV listed smaller than [SyncState.csvSizes] says was cut
+         * short and is written again; one listed larger is left alone, as
+         * another phone whose number formatting differs may have written it,
+         * and rewriting that would only start the two phones trading copies.
+         * An old .bin goes only once the folder lists its run's CSV at exactly
+         * the expected size.
          */
         fun plan(
             localIds: List<String>,
-            localBinSizes: Map<String, Long>,
             remote: Map<String, RemoteFile>,
             remoteIndexIds: List<String>,
             deletedIds: Set<String>,
@@ -156,34 +217,44 @@ class SyncPlan(
             indexSize: Long,
             sweepsHash: String,
             sweepsSize: Long,
-            csv: Boolean,
         ): SyncPlan {
             val local = localIds.toSet()
-            fun complete(name: String, expected: Long?): Boolean {
-                val r = remote[name] ?: return false
-                return expected == null || r.size < 0 || r.size == expected
-            }
-            // A run deleted on another phone (a folder tombstone) is kept here but never uploaded again.
-            val bins = localIds.filter { it !in deletedIds && !complete("$it.bin", localBinSizes[it]) }
+            val csvFiles = csvFilesById(local + remoteIndexIds + deletedIds, remote.keys)
+
             // A run with any copy a pass was still writing when it died (under its recorded name or its current one)
-            // may have a partial file in the folder: its CSV is written again.
+            // may have a partial file in the folder: its CSV is written again. A run deleted on another phone (a
+            // folder tombstone) is kept here but never uploaded again.
             val unfinished = state.csvWriting.values.toSet()
-            val csvs = if (csv) localIds.filter { id -> id !in deletedIds && (id in unfinished || (state.csvNames[id]?.let { it !in remote } ?: true)) } else emptyList()
+            fun listedCsv(id: String): RemoteFile? = state.csvNames[id]?.let { remote[it] }?.takeIf { id !in unfinished }
+            val csvs = localIds.filter { id ->
+                val listed = listedCsv(id)
+                val expected = state.csvSizes[id]
+                id !in deletedIds && (listed == null || (expected != null && listed.size in 0 until expected))
+            }
+
+            val retire = localIds.filter { id ->
+                val listed = listedCsv(id)
+                "$id.bin" in remote && id !in deletedIds && listed != null && listed.size >= 0 && listed.size == state.csvSizes[id]
+            }
+
             val deletions = LinkedHashMap<String, List<String>>()
             for (id in deletedIds) {
                 if (id in local)
                     continue
-                val names = listOfNotNull("$id.bin".takeIf { it in remote }, state.csvNames[id]?.takeIf { it in remote })
+                val recorded = listOfNotNull("$id.bin".takeIf { it in remote }, state.csvNames[id]?.takeIf { it in remote })
+                // Another phone's copy is found by its suffix, so a run deleted here leaves no CSV behind.
+                val names = (recorded + csvFiles[id].orEmpty()).distinct()
                 if (names.isNotEmpty())
                     deletions[id] = names
             }
-            val elsewhere = remoteIndexIds.filter { it !in local && it !in deletedIds && "$it.bin" in remote }.toSet()
+
+            val elsewhere = remoteIndexIds.filter { it !in local && it !in deletedIds && ("$it.bin" in remote || it in csvFiles) }.toSet()
             return SyncPlan(
-                binsToWrite = bins,
                 csvToWrite = csvs,
                 deletions = deletions,
-                writeIndex = indexHash != state.indexHash || !complete("index.json", indexSize),
-                writeSweeps = sweepsHash != state.sweepsHash || !complete("sweeps.json", sweepsSize),
+                binsToRetire = retire,
+                writeIndex = needsWrite(remote["index.json"], indexHash, indexSize, state.indexHash),
+                writeSweeps = needsWrite(remote["sweeps.json"], sweepsHash, sweepsSize, state.sweepsHash),
                 notOnThisPhone = elsewhere,
             )
         }

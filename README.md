@@ -65,9 +65,11 @@ search, tuning a damper with the Damper tab and sweeps, and keeping the data.
 - Peak labels, pinch zoom, pan, tap crosshair readout, double-tap reset.
 - Share any chart as PNG; export spectra or raw samples as CSV.
 - Cloud sync: pick any folder through the system picker (Google Drive,
-  Dropbox, OneDrive, local) and the app mirrors its recordings, settings
-  and sweeps into it a few seconds after each change, optionally with a CSV
-  per run; "Restore from folder" brings everything back on a new phone.
+  Dropbox, OneDrive, local) and the app mirrors its recordings, their
+  details and the sweeps into it a few seconds after each change; "Restore
+  from folder" brings everything back on a new phone. The folder holds only
+  standard formats (a CSV of samples per run, a `runs.csv` table of every
+  run, and JSON), so other tools can read it directly.
 - Settings persist across launches; light/dark/dynamic color themes.
 
 ## Building
