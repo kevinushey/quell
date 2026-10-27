@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.SensorsOff
@@ -385,6 +387,7 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
                 else (if (run.locationMarks.isNotEmpty()) "Antinode " else if (tapMode) "Tap " else "") + recorder.suggestedName()
             )
         }
+        var notes by remember { mutableStateOf("") }
         val gaps = remember(run) { StreamGaps.find(run.series.time) }
         // A break biases a spectrum, so drive and plain runs start on their longest unbroken stretch; tap runs keep
         // every stretch, since their taps (and antinode locations) may sit on either side of a break.
@@ -394,7 +397,8 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
             onDismissRequest = {},
             title = { Text("Save recording") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Scrolls so the fields stay reachable above the keyboard on a short screen.
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("${formatCount(run.series.size)} samples over ${formatDuration(run.series.duration)}")
                     if (gaps != null) {
                         val what = "The sensor stopped for %.1f s in all (%d break%s), usually because the screen went off or another app was in front.".format(
@@ -418,12 +422,19 @@ fun RecordScreen(vm: MainViewModel, sweepId: String?, onDone: () -> Unit) {
                             keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
                         )
                     }
+                    OutlinedTextField(
+                        value = notes,
+                        onValueChange = { notes = it },
+                        label = { Text("Notes") },
+                        placeholder = { Text("e.g. With damper installed") },
+                        maxLines = 3,
+                    )
                 }
             },
             confirmButton = {
                 TextButton(enabled = !saving && valueValid, onClick = {
                     // On failure the dialog stays up with the recording intact, for a retry; success leaves via `saved`.
-                    vm.savePendingRecording(name.ifBlank { recorder.suggestedName() }, sweep, value, trim)
+                    vm.savePendingRecording(name.ifBlank { recorder.suggestedName() }, notes, sweep, value, trim)
                 }) { Text(if (saving) "Saving..." else "Save") }
             },
             dismissButton = { TextButton(enabled = !saving, onClick = { vm.setPendingRecording(null) }) { Text("Discard") } },

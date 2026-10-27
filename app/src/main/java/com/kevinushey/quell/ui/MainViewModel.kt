@@ -225,12 +225,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         sweep: Sweep? = null,
         value: Double? = null,
         trim: ClosedFloatingPointRange<Double>? = null,
+        notes: String = "",
     ): Boolean = importMutex.withLock {
         _busy.value++
         try {
             releaseMemoryForSave()
             repo.add(name, "Recorded on device", run) { meta ->
-                val windowed = if (trim == null) meta else meta.copy(trimStart = trim.start, trimEnd = trim.endInclusive)
+                val noted = meta.copy(notes = notes.trim())
+                val windowed = if (trim == null) noted else noted.copy(trimStart = trim.start, trimEnd = trim.endInclusive)
                 if (sweep == null) windowed else joinSweep(windowed, sweep, value)
             }
             // The run is safe from here on; a failed step bookkeeping must not read as a failed save.
@@ -268,14 +270,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * recreated mid-save can neither cut the write short nor offer the
      * same run for saving a second time.
      */
-    fun savePendingRecording(name: String, sweep: Sweep?, value: Double?, trim: ClosedFloatingPointRange<Double>?) {
+    fun savePendingRecording(name: String, notes: String, sweep: Sweep?, value: Double?, trim: ClosedFloatingPointRange<Double>?) {
         val run = _pendingRecording.value ?: return
         if (_savingRecording.value)
             return
         _savingRecording.value = true
         viewModelScope.launch {
             try {
-                if (addRecording(name, run, sweep, value, trim)) {
+                if (addRecording(name, run, sweep, value, trim, notes)) {
                     _pendingRecording.value = null
                     _recordingSaved.value = true
                 }

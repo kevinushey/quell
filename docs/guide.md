@@ -28,7 +28,9 @@ Three kinds of recording cover most uses:
 **Record on the phone.** Tap the sensor icon in the top bar. Choose Drive or
 Tap test (or neither), mount the phone, and press Start. The screen shows the
 live spectrum of the last four seconds, or in tap mode the ring-down fit of
-each tap as it happens. Stop, name the run, save.
+each tap as it happens. Stop, name the run, add any notes ("with damper
+installed"), save. Notes show under the run on the Data tab, where its menu
+can edit them later.
 
 **Import.** The file icon opens the system picker; phyphox "Acceleration"
 exports (zip or the CSV inside) and plain CSV files with a time column plus
